@@ -5,7 +5,7 @@ from constants import AminoAcidVocab, AMINO_ACID_ATOM_TYPES
 from sequence import Sequence
 import torch
 import torch.nn.functional as F
-from typing import Dict
+from typing import Dict, Tuple
 
 
 class ProteinStructure:
@@ -70,6 +70,35 @@ class ProteinStructure:
         if n_chains != 1:
             raise Exception(f"Protein in mmCIF file '{f_mmcif}' is not monomeric.")
         return ProteinStructure._from_atom_arr(atom_arr)
+
+
+class ProteinFrames:
+    def __init__(self, structure: ProteinStructure) -> None:
+        self.Rs, self.ts = self._structure_to_frames(structure)
+
+    def _structure_to_frames(
+        self, structure: ProteinStructure
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.rigid_from_three_points(
+            *(structure.atom_coords[atom_type] for atom_type in ["N", "CA", "C"])
+        )
+
+    def rigid_from_three_points(
+        self, x1: torch.Tensor, x2: torch.Tensor, x3: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        print(x1.shape, x2.shape, x3.shape)
+        # Supplementary Info Algorithm 21
+        v1 = x3 - x2
+        v2 = x1 - x2
+
+        e1 = v1 / torch.norm(v1, dim=-1, keepdim=True)
+        u2 = v2 - e1 * (e1 * v2).sum(dim=-1).unsqueeze(-1)
+        e2 = u2 / torch.norm(u2, dim=-1, keepdim=True)
+        e3 = torch.cross(e1, e2, dim=-1)
+
+        R = torch.cat([e1.unsqueeze(-2), e2.unsqueeze(-2), e3.unsqueeze(-2)], dim=-2)
+        t = x2
+        return R, t
 
 
 class TemplateProtein:
