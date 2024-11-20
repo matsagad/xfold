@@ -4,6 +4,7 @@ import biotite.structure.io.pdbx as pdbx
 from constants import AminoAcidVocab, AMINO_ACID_ATOM_TYPES
 from sequence import Sequence
 import torch
+import torch.nn.functional as F
 from typing import Dict
 
 
@@ -69,3 +70,45 @@ class ProteinStructure:
         if n_chains != 1:
             raise Exception(f"Protein in mmCIF file '{f_mmcif}' is not monomeric.")
         return ProteinStructure._from_atom_arr(atom_arr)
+
+
+class TemplateProtein:
+    def __init__(self, structure: ProteinStructure) -> None:
+        self.template_pair_feat = self._build_pair_feature_matrix(structure)
+        self.template_angle_feat = self._build_angle_feature_matrix(structure)
+
+    def _build_pair_feature_matrix(self, structure: ProteinStructure) -> torch.Tensor:
+        N_res, N_temp_pair_feats = structure.seq.length(), 88
+        temp_pair_feat = torch.empty((N_res, N_res, N_temp_pair_feats))
+
+        # Distogram: one-hot encoding of binned interatomic CB distances
+        ALPHA_CARBON = "CA"
+        BETA_CARBON = "CB"
+        N_COORDS_PER_RESIDUE = 3
+
+        N_BINS = 38
+        MIN_INTERATOMIC_DISTANCE = 3.25
+        MAX_INTERATOMIC_DISTANCE = 50.75
+        BIN_EDGES = torch.linspace(
+            MIN_INTERATOMIC_DISTANCE, MAX_INTERATOMIC_DISTANCE, N_BINS + 1
+        )
+
+        carbon_atom_coords = torch.empty((N_res, N_COORDS_PER_RESIDUE))
+        has_beta_carbon = structure.atom_masks[BETA_CARBON] == 1
+        carbon_atom_coords[has_beta_carbon] = structure.atom_coords[BETA_CARBON][
+            has_beta_carbon
+        ]
+        carbon_atom_coords[~has_beta_carbon] = structure.atom_coords[ALPHA_CARBON][
+            ~has_beta_carbon
+        ]
+
+        dist = torch.cdist(carbon_atom_coords, carbon_atom_coords, p=2)
+        bin_nos = torch.searchsorted(BIN_EDGES, dist) - 1
+        bin_nos[bin_nos == -1] = 0
+        temp_pair_feat[:, :, : N_BINS + 1] = F.one_hot(bin_nos, N_BINS + 1)
+
+        # TODO: add unit vector and other features
+
+    def _build_angle_feature_matrix(self, structure: ProteinStructure) -> torch.Tensor:
+        # TODO: compute torsion angles
+        raise NotImplementedError()
