@@ -10,7 +10,7 @@ class Sequence:
         self.seq_str = seq.upper()
 
         self.seq = F.one_hot(
-            torch.tensor([AminoAcidVocab.get_index(aa) for aa in self.seq_str]),
+            torch.tensor(AminoAcidVocab.index_sequence(self.seq_str)),
             AminoAcidVocab.vocab_size,
         )
 
@@ -26,38 +26,35 @@ class Sequence:
 
 
 class MSA:
-    def __init__(self, msa: List[str]) -> None:
+    def __init__(self, msa: List[str], is_extra: bool = False) -> None:
         self._validate_msa(msa)
         self.msa_str = list(map(str.upper, msa))
-        self.msa_feat = self._build_msa_feature_matrix(msa)
+        self.msa_feat = self._build_msa_feature_matrix(msa, is_extra)
 
     def _validate_msa(self, msa: List[str]) -> None:
         if not msa:
             raise Exception("MSA is empty.")
         n_cols = len(msa[0])
-        for row in msa:
-            if len(row) != n_cols:
+        for seq in msa:
+            if len(seq) != n_cols:
                 raise Exception("MSA has inconsistent number of columns.")
-            for char in row:
+            for char in seq:
                 if not MSAVocab.is_msa_char(char.upper()):
                     raise Exception(f"MSA has invalid character: '{char}'.")
 
     def _normalise_deletion_count(self, d: torch.Tensor) -> torch.Tensor:
         return 2 / torch.pi * torch.arctan(d / 3)
 
-    def _build_msa_feature_matrix(self, msa: List[str]) -> torch.Tensor:
+    def _build_msa_feature_matrix(
+        self, msa: List[str], is_extra: bool = False
+    ) -> torch.Tensor:
         N_clust, N_res, N_msa_feats = len(msa), len(msa[0]), 49
         msa_feat = torch.empty((N_clust, N_res, N_msa_feats))
 
         # One-hot representation
         N_one_hot = MSAVocab.vocab_size
         msa_feat[:, :, :N_one_hot] = F.one_hot(
-            torch.tensor(
-                [
-                    [MSAVocab.get_index(msa_char) for msa_char in row]
-                    for row in self.msa_str
-                ]
-            ),
+            torch.tensor([MSAVocab.index_sequence(seq) for seq in self.msa_str]),
             MSAVocab.vocab_size,
         )
 
@@ -71,6 +68,10 @@ class MSA:
         msa_feat[:, :, N_one_hot + 1] = self._normalise_deletion_count(
             cum_deletion_count
         )
+
+        ## No global/sequence-wide features for extra MSA
+        if is_extra:
+            return msa_feat[:, :, : N_one_hot + 2]
 
         # Deletion mean: normalised mean, across all sequences, of deletions to the left
         msa_feat[:, :, N_one_hot + 2] = self._normalise_deletion_count(
