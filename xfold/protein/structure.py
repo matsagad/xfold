@@ -1,8 +1,17 @@
 import biotite
 import biotite.structure.io.pdb as pdb
 import biotite.structure.io.pdbx as pdbx
-from constants import AminoAcidVocab, AMINO_ACID_ATOM_TYPES
-from sequence import Sequence
+from constants import (
+    AminoAcidVocab,
+    AMINO_ACID_ATOM_TYPES,
+    MSA_GAP_SYMBOL,
+    AMINO_ACID_UNKNOWN,
+    AMINO_ACID_TEMP_INDICES,
+    BACKBONE_ATOM_TYPES,
+)
+from functools import reduce
+from operator import mul
+from sequence import Sequence, MSA
 import torch
 import torch.nn.functional as F
 from typing import Dict, Tuple
@@ -15,7 +24,8 @@ class ProteinStructure:
         atom_coords: Dict[str, torch.Tensor],
         atom_masks: Dict[str, torch.Tensor],
     ) -> None:
-        self.seq = Sequence(seq)
+        self.seq = Sequence(seq.replace(MSA_GAP_SYMBOL, AMINO_ACID_UNKNOWN))
+        self.msa_seq = MSA.one_hot_encode([seq])[0]
         self.atom_coords = atom_coords
         self.atom_masks = atom_masks
 
@@ -75,19 +85,22 @@ class ProteinStructure:
 class ProteinFrames:
     def __init__(self, structure: ProteinStructure) -> None:
         self.Rs, self.ts = self._structure_to_frames(structure)
+        self.backbone_mask = reduce(
+            mul, (structure.atom_masks[atom_type] for atom_type in BACKBONE_ATOM_TYPES)
+        )
 
     def _structure_to_frames(
         self, structure: ProteinStructure
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.rigid_from_three_points(
-            *(structure.atom_coords[atom_type] for atom_type in ["N", "CA", "C"])
+            *(structure.atom_coords[atom_type] for atom_type in BACKBONE_ATOM_TYPES)
         )
 
     def rigid_from_three_points(
         self, x1: torch.Tensor, x2: torch.Tensor, x3: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         print(x1.shape, x2.shape, x3.shape)
-        # Supplementary Info Algorithm 21
+        # AlphaFold Supplementary Info Algorithm 21
         v1 = x3 - x2
         v2 = x1 - x2
 
@@ -103,16 +116,19 @@ class ProteinFrames:
 
 class TemplateProtein:
     def __init__(self, structure: ProteinStructure) -> None:
+        self.frames = ProteinFrames(structure)
         self.template_pair_feat = self._build_pair_feature_matrix(structure)
         self.template_angle_feat = self._build_angle_feature_matrix(structure)
 
     def _build_pair_feature_matrix(self, structure: ProteinStructure) -> torch.Tensor:
         N_res, N_temp_pair_feats = structure.seq.length(), 88
         temp_pair_feat = torch.empty((N_res, N_res, N_temp_pair_feats))
+        curr_index = 0
 
         # Distogram: one-hot encoding of binned interatomic CB distances
         ALPHA_CARBON = "CA"
         BETA_CARBON = "CB"
+        GLYCINE = "G"
         N_COORDS_PER_RESIDUE = 3
 
         N_BINS = 38
@@ -123,20 +139,63 @@ class TemplateProtein:
         )
 
         carbon_atom_coords = torch.empty((N_res, N_COORDS_PER_RESIDUE))
-        has_beta_carbon = structure.atom_masks[BETA_CARBON] == 1
-        carbon_atom_coords[has_beta_carbon] = structure.atom_coords[BETA_CARBON][
-            has_beta_carbon
-        ]
-        carbon_atom_coords[~has_beta_carbon] = structure.atom_coords[ALPHA_CARBON][
-            ~has_beta_carbon
+        is_glycine = structure.seq.seq[:, AminoAcidVocab.get_index(GLYCINE)] == 1
+        carbon_atom_coords[is_glycine] = structure.atom_coords[BETA_CARBON][is_glycine]
+        carbon_atom_coords[~is_glycine] = structure.atom_coords[ALPHA_CARBON][
+            ~is_glycine
         ]
 
         dist = torch.cdist(carbon_atom_coords, carbon_atom_coords, p=2)
         bin_nos = torch.searchsorted(BIN_EDGES, dist) - 1
         bin_nos[bin_nos == -1] = 0
-        temp_pair_feat[:, :, : N_BINS + 1] = F.one_hot(bin_nos, N_BINS + 1)
+        temp_pair_feat[:, :, curr_index : curr_index + N_BINS + 1] = F.one_hot(
+            bin_nos, N_BINS + 1
+        )
+        curr_index += N_BINS + 1
 
-        # TODO: add unit vector and other features
+        # Unit vectors: displacement of CA atoms transformed to be within local frame
+        local_Rs, local_ts = self.frames.Rs, self.frames.ts
+        v_displacement = (
+            (
+                structure.atom_coords[ALPHA_CARBON].unsqueeze(0)
+                - structure.atom_coords[ALPHA_CARBON].unsqueeze(1)
+            )
+            - local_ts.unsqueeze(1)
+        ) @ local_Rs
+        temp_pair_feat[:, :, curr_index : curr_index + N_COORDS_PER_RESIDUE] = (
+            v_displacement / torch.norm(v_displacement, dim=-1, keepdim=True)
+        )
+        curr_index += N_COORDS_PER_RESIDUE
+
+        # Amino acid one-hot vectors: including gap symbol and tiled both ways
+        N_AMINO_ACID_TEMP_SYMBOLS = len(AMINO_ACID_TEMP_INDICES)
+        temp_pair_feat[:, :, curr_index : curr_index + N_AMINO_ACID_TEMP_SYMBOLS] = (
+            structure.msa_seq[:, :-1].unsqueeze(1)
+        )
+        curr_index += N_AMINO_ACID_TEMP_SYMBOLS
+        temp_pair_feat[:, :, curr_index : curr_index + N_AMINO_ACID_TEMP_SYMBOLS] = (
+            structure.msa_seq[:, :-1].unsqueeze(0)
+        )
+        curr_index += N_AMINO_ACID_TEMP_SYMBOLS
+
+        # Pseudo beta mask: CB (CA for glycine) atom coordinates exist
+        pseudo_beta_mask = torch.empty(N_res)
+        pseudo_beta_mask[is_glycine] = structure.atom_masks[ALPHA_CARBON][is_glycine]
+        pseudo_beta_mask[~is_glycine] = structure.atom_masks[BETA_CARBON][~is_glycine]
+        temp_pair_feat[:, :, curr_index] = pseudo_beta_mask.unsqueeze(
+            1
+        ) * pseudo_beta_mask.unsqueeze(0)
+        curr_index += 1
+
+        # Backbone frame mask: N, CA, C atom coordinates all exist
+        temp_pair_feat[:, :, curr_index] = self.frames.backbone_mask.unsqueeze(
+            1
+        ) * self.frames.backbone_mask.unsqueeze(0)
+        curr_index += 1
+
+        assert curr_index == N_temp_pair_feats
+
+        return temp_pair_feat
 
     def _build_angle_feature_matrix(self, structure: ProteinStructure) -> torch.Tensor:
         # TODO: compute torsion angles
