@@ -6,7 +6,6 @@ from constants import (
     AMINO_ACID_ATOM_TYPES,
     MSA_GAP_SYMBOL,
     AMINO_ACID_UNKNOWN,
-    AMINO_ACID_TEMP_INDICES,
     BACKBONE_ATOM_TYPES,
 )
 from functools import reduce
@@ -122,8 +121,6 @@ class TemplateProtein:
 
     def _build_pair_feature_matrix(self, structure: ProteinStructure) -> torch.Tensor:
         N_res, N_temp_pair_feats = structure.seq.length(), 88
-        temp_pair_feat = torch.empty((N_res, N_res, N_temp_pair_feats))
-        curr_index = 0
 
         # Distogram: one-hot encoding of binned interatomic CB distances
         ALPHA_CARBON = "CA"
@@ -138,62 +135,59 @@ class TemplateProtein:
             MIN_INTERATOMIC_DISTANCE, MAX_INTERATOMIC_DISTANCE, N_BINS + 1
         )
 
-        carbon_atom_coords = torch.empty((N_res, N_COORDS_PER_RESIDUE))
+        cb_atom_coords = torch.empty((N_res, N_COORDS_PER_RESIDUE))
         is_glycine = structure.seq.seq[:, AminoAcidVocab.get_index(GLYCINE)] == 1
-        carbon_atom_coords[is_glycine] = structure.atom_coords[BETA_CARBON][is_glycine]
-        carbon_atom_coords[~is_glycine] = structure.atom_coords[ALPHA_CARBON][
-            ~is_glycine
-        ]
+        cb_atom_coords[is_glycine] = structure.atom_coords[BETA_CARBON][is_glycine]
+        cb_atom_coords[~is_glycine] = structure.atom_coords[ALPHA_CARBON][~is_glycine]
 
-        dist = torch.cdist(carbon_atom_coords, carbon_atom_coords, p=2)
-        bin_nos = torch.searchsorted(BIN_EDGES, dist) - 1
+        cb_dist_matrix = torch.cdist(cb_atom_coords, cb_atom_coords, p=2)
+        bin_nos = torch.searchsorted(BIN_EDGES, cb_dist_matrix) - 1
         bin_nos[bin_nos == -1] = 0
-        temp_pair_feat[:, :, curr_index : curr_index + N_BINS + 1] = F.one_hot(
-            bin_nos, N_BINS + 1
-        )
-        curr_index += N_BINS + 1
+        distogram = F.one_hot(bin_nos, N_BINS + 1)
 
         # Unit vectors: displacement of CA atoms transformed to be within local frame
         local_Rs, local_ts = self.frames.Rs, self.frames.ts
-        v_displacement = (
+        diff_vector = (
             (
                 structure.atom_coords[ALPHA_CARBON].unsqueeze(0)
                 - structure.atom_coords[ALPHA_CARBON].unsqueeze(1)
             )
             - local_ts.unsqueeze(1)
         ) @ local_Rs
-        temp_pair_feat[:, :, curr_index : curr_index + N_COORDS_PER_RESIDUE] = (
-            v_displacement / torch.norm(v_displacement, dim=-1, keepdim=True)
-        )
-        curr_index += N_COORDS_PER_RESIDUE
+        unit_diff_vector = diff_vector / torch.norm(diff_vector, dim=-1, keepdim=True)
 
         # Amino acid one-hot vectors: including gap symbol and tiled both ways
-        N_AMINO_ACID_TEMP_SYMBOLS = len(AMINO_ACID_TEMP_INDICES)
-        temp_pair_feat[:, :, curr_index : curr_index + N_AMINO_ACID_TEMP_SYMBOLS] = (
-            structure.msa_seq[:, :-1].unsqueeze(1)
-        )
-        curr_index += N_AMINO_ACID_TEMP_SYMBOLS
-        temp_pair_feat[:, :, curr_index : curr_index + N_AMINO_ACID_TEMP_SYMBOLS] = (
-            structure.msa_seq[:, :-1].unsqueeze(0)
-        )
-        curr_index += N_AMINO_ACID_TEMP_SYMBOLS
+        aatype_one_hot1 = structure.msa_seq[:, :-1].unsqueeze(1).expand(-1, N_res, -1)
+        aatype_one_hot2 = structure.msa_seq[:, :-1].unsqueeze(0).expand(N_res, -1, -1)
 
         # Pseudo beta mask: CB (CA for glycine) atom coordinates exist
         pseudo_beta_mask = torch.empty(N_res)
         pseudo_beta_mask[is_glycine] = structure.atom_masks[ALPHA_CARBON][is_glycine]
         pseudo_beta_mask[~is_glycine] = structure.atom_masks[BETA_CARBON][~is_glycine]
-        temp_pair_feat[:, :, curr_index] = pseudo_beta_mask.unsqueeze(
-            1
-        ) * pseudo_beta_mask.unsqueeze(0)
-        curr_index += 1
+        pseudo_beta_pair_mask = (
+            pseudo_beta_mask.unsqueeze(1) * pseudo_beta_mask.unsqueeze(0)
+        ).unsqueeze(-1)
 
         # Backbone frame mask: N, CA, C atom coordinates all exist
-        temp_pair_feat[:, :, curr_index] = self.frames.backbone_mask.unsqueeze(
-            1
-        ) * self.frames.backbone_mask.unsqueeze(0)
-        curr_index += 1
+        backbone_pair_mask = (
+            self.frames.backbone_mask.unsqueeze(1)
+            * self.frames.backbone_mask.unsqueeze(0)
+        ).unsqueeze(-1)
 
-        assert curr_index == N_temp_pair_feats
+        # fmt: off
+        temp_pair_feat = torch.cat(
+            [
+                distogram,              # (N_res, N_res, 39)
+                unit_diff_vector,       # (N_res, N_res,  3)
+                aatype_one_hot1,        # (N_res, N_res, 22)
+                aatype_one_hot2,        # (N_res, N_res, 22)
+                pseudo_beta_pair_mask,  # (N_res, N_res,  1)
+                backbone_pair_mask,     # (N_res, N_res,  1)
+            ],
+            dim=-1,
+        )
+        # fmt: on
+        assert temp_pair_feat.shape == (N_res, N_res, N_temp_pair_feats)
 
         return temp_pair_feat
 
