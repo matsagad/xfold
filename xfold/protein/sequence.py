@@ -8,11 +8,15 @@ class Sequence:
     def __init__(self, seq: str) -> None:
         self._validate_sequence(seq)
         self.seq_str = seq.upper()
+        self.seq = Sequence.one_hot_encode(self.seq_str)
 
-        self.seq = F.one_hot(
-            torch.tensor(AminoAcidVocab.index_sequence(self.seq_str)),
-            AminoAcidVocab.vocab_size,
+    def one_hot_encode(seq: str) -> torch.Tensor:
+        return F.one_hot(
+            torch.tensor(AminoAcidVocab.index_sequence(seq)), AminoAcidVocab.vocab_size
         )
+
+    def length(self) -> int:
+        return len(self.seq_str)
 
     def __str__(self) -> str:
         return f'Sequence("{self.seq_str}")'
@@ -30,6 +34,12 @@ class MSA:
         self._validate_msa(msa)
         self.msa_str = list(map(str.upper, msa))
         self.msa_feat = self._build_msa_feature_matrix(msa, is_extra)
+
+    def one_hot_encode(msa: List[str]) -> torch.Tensor:
+        return F.one_hot(
+            torch.tensor([MSAVocab.index_sequence(seq) for seq in msa]),
+            MSAVocab.vocab_size,
+        )
 
     def _validate_msa(self, msa: List[str]) -> None:
         if not msa:
@@ -53,10 +63,7 @@ class MSA:
 
         # One-hot representation
         N_one_hot = MSAVocab.vocab_size
-        msa_feat[:, :, :N_one_hot] = F.one_hot(
-            torch.tensor([MSAVocab.index_sequence(seq) for seq in self.msa_str]),
-            MSAVocab.vocab_size,
-        )
+        msa_feat[:, :, :N_one_hot] = MSA.one_hot_encode(self.msa_str)
 
         # Has deletion: is there a deletion to the left
         GAP_INDEX = MSAVocab.get_index(MSA_GAP_SYMBOL)
