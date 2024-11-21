@@ -3,6 +3,7 @@ from typing import Iterable, List
 # Amino Acid Constants
 AMINO_ACID_ALPHABET = "ACDEFGHIKLMNPQRSTVWXY"
 AMINO_ACID_INDICES = {aa: i for i, aa in enumerate(AMINO_ACID_ALPHABET)}
+AMINO_ACID_UNKNOWN = "X"
 
 AMINO_ACID_CODE_EXPAND = {
     "A": "ALA",
@@ -103,6 +104,7 @@ AMINO_ACID_ATOMS_FOR_CHI_ANGLES = {
     "VAL": [["N", "CA", "CB", "CG1"]],
 }
 # fmt: on
+BACKBONE_ATOM_TYPES = ["N", "CA", "C"]
 
 
 # MSA Constants
