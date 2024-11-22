@@ -1,4 +1,6 @@
 import biotite
+from biotite.structure import dihedral, dihedral_backbone
+import biotite.structure
 import biotite.structure.io.pdb as pdb
 import biotite.structure.io.pdbx as pdbx
 from constants import (
@@ -7,6 +9,8 @@ from constants import (
     MSA_GAP_SYMBOL,
     AMINO_ACID_UNKNOWN,
     BACKBONE_ATOM_TYPES,
+    AMINO_ACID_ATOMS_FOR_CHI_ANGLES,
+    AMINO_ACID_180_DEG_SYMMETRIC_CHI_ANGLE,
 )
 from functools import reduce
 from operator import mul
@@ -80,6 +84,28 @@ class ProteinStructure:
             raise Exception(f"Protein in mmCIF file '{f_mmcif}' is not monomeric.")
         return ProteinStructure._from_atom_arr(atom_arr)
 
+    def _to_biotite_atom_array(self) -> biotite.structure.AtomArray:
+        atoms = []
+        for atom_type, coords in self.atom_coords.items():
+            mask = self.atom_masks[atom_type]
+            valid_res_ids = torch.argwhere(mask)[:, 0] + 1
+
+            for res_id in valid_res_ids:
+                atoms.append(
+                    biotite.structure.Atom(
+                        coord=coords[res_id - 1],
+                        chain_id="A",
+                        res_id=res_id,
+                        res_name=AminoAcidVocab.get_three_letter_code(
+                            self.seq.seq_str[res_id - 1]
+                        ),
+                        atom_name=atom_type,
+                        element=atom_type[0],
+                    )
+                )
+        atoms.sort(key=lambda x: x.res_id)
+        return biotite.structure.array(atoms)
+
 
 class ProteinFrames:
     def __init__(self, structure: ProteinStructure) -> None:
@@ -98,7 +124,6 @@ class ProteinFrames:
     def rigid_from_three_points(
         self, x1: torch.Tensor, x2: torch.Tensor, x3: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        print(x1.shape, x2.shape, x3.shape)
         # AlphaFold Supplementary Info Algorithm 21
         v1 = x3 - x2
         v2 = x1 - x2
@@ -192,5 +217,86 @@ class TemplateProtein:
         return temp_pair_feat
 
     def _build_angle_feature_matrix(self, structure: ProteinStructure) -> torch.Tensor:
-        # TODO: compute torsion angles
-        raise NotImplementedError()
+        N_res, N_temp_angle_feats = structure.seq.length(), 57
+
+        # Amino acid one-hot encoding
+        aatype_one_hot = structure.msa_seq[:, :-1]
+
+        # Torsion angles: 3 x backbone and 4 x side chain angles in sine and cosine
+        atom_arr = structure._to_biotite_atom_array()
+        phi, psi, omega = tuple(map(torch.from_numpy, dihedral_backbone(atom_arr)))
+        backbone_angles = [omega, phi, psi]
+        backbone_angle_masks = torch.stack(
+            [angle.isfinite().long() for angle in backbone_angles], dim=1
+        )
+        for i, angle in enumerate(backbone_angles):
+            angle[backbone_angle_masks[:, i] == 0] = 0
+
+        N_CHI_ANGLES = 4
+        chi_angles = torch.zeros((N_res, N_CHI_ANGLES))
+        alt_chi_angles = torch.zeros((N_res, N_CHI_ANGLES))
+        chi_angle_masks = torch.zeros((N_res, N_CHI_ANGLES))
+        for i in range(N_res):
+            res_id = i + 1
+            res_atoms = atom_arr[atom_arr.res_id == res_id]
+            res_code = res_atoms[0].res_name
+            if res_atoms.array_length() == 0:
+                continue
+            atom_types_per_chi_angle = AMINO_ACID_ATOMS_FOR_CHI_ANGLES[res_code]
+            for chi_angle_no, atom_types in enumerate(atom_types_per_chi_angle):
+                chi_angle_atom_matches = [
+                    res_atoms[res_atoms.atom_name == atom_type]
+                    for atom_type in atom_types
+                ]
+                if all(
+                    len(atom_matches) == 1 for atom_matches in chi_angle_atom_matches
+                ):
+                    chi_angles[i][chi_angle_no] = dihedral(
+                        *(atom_matches[0] for atom_matches in chi_angle_atom_matches)
+                    ).item()
+                    if (
+                        res_code in AMINO_ACID_180_DEG_SYMMETRIC_CHI_ANGLE
+                        and chi_angle_no + 1
+                        == AMINO_ACID_180_DEG_SYMMETRIC_CHI_ANGLE[res_code]
+                    ):
+                        alt_chi_angles[i][chi_angle_no] = (
+                            chi_angles[i][chi_angle_no] + torch.pi
+                        )
+                    else:
+                        alt_chi_angles[i][chi_angle_no] = chi_angles[i][chi_angle_no]
+                    chi_angle_masks[i][chi_angle_no] = 1
+
+        backbone_torsion_angles = torch.stack(backbone_angles, dim=1)
+        torsion_angles_sin_cos = torch.cat(
+            [
+                trig_angles
+                for angles in (backbone_torsion_angles, chi_angles)
+                for trig_angles in (torch.sin(angles), torch.cos(angles))
+            ],
+            dim=1,
+        )
+        alt_torsion_angles_sin_cos = torch.cat(
+            [
+                trig_angles
+                for angles in (backbone_torsion_angles, alt_chi_angles)
+                for trig_angles in (torch.sin(angles), torch.cos(angles))
+            ],
+            dim=1,
+        )
+        torsion_angle_masks = torch.cat([backbone_angle_masks, chi_angle_masks], dim=1)
+
+        # fmt: off
+        temp_angle_feat = torch.cat(
+            [
+                aatype_one_hot,             # (N_res, 22)
+                torsion_angles_sin_cos,     # (N_res, 14)
+                alt_torsion_angles_sin_cos, # (N_res, 14)
+                torsion_angle_masks,        # (N_res,  7)
+            ],
+            dim=1,
+        )
+        # fmt: on
+
+        assert temp_angle_feat.shape == (N_res, N_temp_angle_feats)
+
+        return temp_angle_feat

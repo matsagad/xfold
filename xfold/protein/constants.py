@@ -103,6 +103,12 @@ AMINO_ACID_ATOMS_FOR_CHI_ANGLES = {
     "TYR": [["N", "CA", "CB", "CG"], ["CA", "CB", "CG", "CD1"]],
     "VAL": [["N", "CA", "CB", "CG1"]],
 }
+AMINO_ACID_180_DEG_SYMMETRIC_CHI_ANGLE = {
+    "ASP": [2],
+    "GLU": [3],
+    "PHE": [2],
+    "TYR": [2],
+}
 # fmt: on
 BACKBONE_ATOM_TYPES = ["N", "CA", "C"]
 
