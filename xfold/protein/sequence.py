@@ -8,12 +8,16 @@ class Sequence:
     def __init__(self, seq: str) -> None:
         self._validate_sequence(seq)
         self.seq_str = seq.upper()
-        self.seq = Sequence.one_hot_encode(self.seq_str)
+        self.seq_index = Sequence.residue_index(self.seq_str)
+        self.seq_one_hot = Sequence.one_hot_encode(self.seq_str)
+
+    def residue_index(seq: str) -> torch.Tensor:
+        return torch.tensor(AminoAcidVocab.index_sequence(seq)).long()
 
     def one_hot_encode(seq: str) -> torch.Tensor:
         return F.one_hot(
             torch.tensor(AminoAcidVocab.index_sequence(seq)), AminoAcidVocab.vocab_size
-        )
+        ).float()
 
     def length(self) -> int:
         return len(self.seq_str)
@@ -30,8 +34,11 @@ class Sequence:
 
 
 class MSA:
+    N_MSA_FEATS = 49
+
     def __init__(self, msa: List[str], is_extra: bool = False) -> None:
         self._validate_msa(msa)
+        self.is_extra = is_extra
         self.msa_str = list(map(str.upper, msa))
         self.msa_feat = self._build_msa_feature_matrix(msa, is_extra)
 
@@ -58,7 +65,7 @@ class MSA:
     def _build_msa_feature_matrix(
         self, msa: List[str], is_extra: bool = False
     ) -> torch.Tensor:
-        N_clust, N_res, N_msa_feats = len(msa), len(msa[0]), 49
+        N_clust, N_res, N_msa_feats = len(msa), len(msa[0]), self.N_MSA_FEATS
         msa_feat = torch.empty((N_clust, N_res, N_msa_feats))
 
         # One-hot representation

@@ -161,7 +161,9 @@ class TemplateProtein:
         )
 
         cb_atom_coords = torch.empty((N_res, N_COORDS_PER_RESIDUE))
-        is_glycine = structure.seq.seq[:, AminoAcidVocab.get_index(GLYCINE)] == 1
+        is_glycine = (
+            structure.seq.seq_one_hot[:, AminoAcidVocab.get_index(GLYCINE)] == 1
+        )
         cb_atom_coords[is_glycine] = structure.atom_coords[BETA_CARBON][is_glycine]
         cb_atom_coords[~is_glycine] = structure.atom_coords[ALPHA_CARBON][~is_glycine]
 
