@@ -3,7 +3,12 @@ from biotite.structure import dihedral, dihedral_backbone
 import biotite.structure
 import biotite.structure.io.pdb as pdb
 import biotite.structure.io.pdbx as pdbx
-from constants import (
+from functools import reduce
+from operator import mul
+import torch
+import torch.nn.functional as F
+from typing import Dict, Tuple
+from xfold.protein.constants import (
     AminoAcidVocab,
     AMINO_ACID_ATOM_TYPES,
     MSA_GAP_SYMBOL,
@@ -12,12 +17,7 @@ from constants import (
     AMINO_ACID_ATOMS_FOR_CHI_ANGLES,
     AMINO_ACID_180_DEG_SYMMETRIC_CHI_ANGLE,
 )
-from functools import reduce
-from operator import mul
-from sequence import Sequence, MSA
-import torch
-import torch.nn.functional as F
-from typing import Dict, Tuple
+from xfold.protein.sequence import Sequence, MSA
 
 
 class ProteinStructure:

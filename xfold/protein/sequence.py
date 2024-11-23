@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from typing import List
-from constants import AminoAcidVocab, MSAVocab, MSA_GAP_SYMBOL
+from xfold.protein.constants import AminoAcidVocab, MSAVocab, MSA_GAP_SYMBOL
 
 
 class Sequence:
