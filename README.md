@@ -1,15 +1,19 @@
 # xFold
 
-A library of reusable components for protein modelling.
-
-(Also a personal challenge of implementing AlphaFold2 from scratch.)
+A project of implementing AlphaFold2 from scratch.
 
 ## Checklist
 
-- [ ] Sequence components
-    - [ ] Sequence and MSA objects
-- [ ] Structure components
-- [ ] And more...
+- [ ] Data pipeline
+- [ ] Main inference loop
+    - [x] MSA/Template featurisation
+    - [ ] Evolutionary information inclusion
+        - [x] Input embedder
+        - [ ] Recycling embedder
+        - [ ] Template embedder
+        - [ ] Extra MSA embedder
+    - [ ] Evoformer stack
+    - [ ] Structure module
 
 ## Resources
 
