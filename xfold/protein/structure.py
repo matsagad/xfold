@@ -150,6 +150,13 @@ class ProteinFrames:
         t = x2
         return R, t
 
+    def zero_init(n_res: int) -> "ProteinFrames":
+        # "Black-hole initialisation"
+        Rs = torch.eye(3).unsqueeze(0).repeat(n_res, 1, 1)
+        ts = torch.zeros((n_res, 3))
+        backbone_mask = torch.ones((n_res,))
+        return ProteinFrames(Rs, ts, backbone_mask)
+
 
 class TemplateProtein:
     def __init__(self, structure: ProteinStructure) -> None:
