@@ -108,21 +108,34 @@ class ProteinStructure:
 
 
 class ProteinFrames:
-    def __init__(self, structure: ProteinStructure) -> None:
-        self.Rs, self.ts = self._structure_to_frames(structure)
-        self.backbone_mask = reduce(
+    def __init__(
+        self, Rs: torch.Tensor, ts: torch.Tensor, backbone_mask: torch.Tensor
+    ) -> None:
+        N_res = Rs.shape[0]
+        assert Rs.shape == (N_res, 3, 3)
+        assert ts.shape == (N_res, 3)
+        assert backbone_mask.shape == (N_res,)
+
+        self.Rs = Rs
+        self.ts = ts
+        self.backbone_mask = backbone_mask
+
+    def from_structure(structure: ProteinStructure) -> "ProteinFrames":
+        Rs, ts = ProteinFrames._structure_to_frames(structure)
+        backbone_mask = reduce(
             mul, (structure.atom_masks[atom_type] for atom_type in BACKBONE_ATOM_TYPES)
         )
+        return ProteinFrames(Rs, ts, backbone_mask)
 
     def _structure_to_frames(
-        self, structure: ProteinStructure
+        structure: ProteinStructure,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.rigid_from_three_points(
+        return ProteinFrames.rigid_from_three_points(
             *(structure.atom_coords[atom_type] for atom_type in BACKBONE_ATOM_TYPES)
         )
 
     def rigid_from_three_points(
-        self, x1: torch.Tensor, x2: torch.Tensor, x3: torch.Tensor
+        x1: torch.Tensor, x2: torch.Tensor, x3: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # AlphaFold Supplementary Info Algorithm 21
         v1 = x3 - x2
@@ -140,7 +153,7 @@ class ProteinFrames:
 
 class TemplateProtein:
     def __init__(self, structure: ProteinStructure) -> None:
-        self.frames = ProteinFrames(structure)
+        self.frames = ProteinFrames.from_structure(structure)
         self.template_pair_feat = self._build_pair_feature_matrix(structure)
         self.template_angle_feat = self._build_angle_feature_matrix(structure)
 
