@@ -32,6 +32,7 @@ AMINO_ACID_CODE_CONTRACT = {aa3: aa1 for aa1, aa3 in AMINO_ACID_CODE_EXPAND.item
 
 
 class AminoAcidVocab:
+    vocab = AMINO_ACID_ALPHABET
     vocab_size = len(AMINO_ACID_ALPHABET)
 
     def get_index(aa: str) -> int:
@@ -128,6 +129,7 @@ AMINO_ACID_TEMP_INDICES = {
 
 
 class MSAVocab:
+    vocab = list(MSA_SYMBOL_INDICES.keys())
     vocab_size = len(MSA_SYMBOL_INDICES)
 
     def get_index(msa_char: str) -> int:
