@@ -98,3 +98,17 @@ class MSA:
         ].mean(dim=0, keepdim=True)
 
         return msa_feat
+
+    def sample_msa(self, max_n_seqs: int = 512, is_extra: bool = None) -> "MSA":
+        # Note: can't just slice through features since deletion mean
+        # and cluster profile are MSA-wide/row-wise features
+        N_seq = len(self.msa_str)
+        indices = torch.randint(1, N_seq, (max_n_seqs - 1,))
+
+        bootstrapped_msa = [self.msa_str[0]]
+        for index in indices:
+            bootstrapped_msa.append(self.msa_str[index])
+
+        if is_extra is None:
+            is_extra = self.is_extra
+        return MSA(bootstrapped_msa, is_extra)
