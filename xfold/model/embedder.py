@@ -20,64 +20,68 @@ class RelPos(nn.Module):
 class InputEmbedder(nn.Module):
     def __init__(
         self,
-        msa_embed_dim: int,
-        pair_embed_dim: int,
-        max_relative_residue_dist: int = 32,
+        msa_dim: int,
+        pair_dim: int,
+        max_relpos_dist: int = 32,
     ) -> None:
         super().__init__()
         target_dim = AminoAcidVocab.vocab_size
-        self.linear_pair_embed_target1 = nn.Linear(target_dim, pair_embed_dim)
-        self.linear_pair_embed_target2 = nn.Linear(target_dim, pair_embed_dim)
 
-        residue_dist_bins = torch.arange(
-            -max_relative_residue_dist, max_relative_residue_dist + 1
-        ).float()
-        self.relpos = RelPos(pair_embed_dim, residue_dist_bins)
+        # Pair embedding layers
+        self.pair_proj1 = nn.Linear(target_dim, pair_dim)
+        self.pair_proj2 = nn.Linear(target_dim, pair_dim)
 
-        self.linear_msa_embed_msa = nn.Linear(MSA.N_MSA_FEATS, msa_embed_dim)
-        self.linear_msa_embed_target = nn.Linear(target_dim, msa_embed_dim)
+        dist_bins = torch.arange(-max_relpos_dist, max_relpos_dist + 1).float()
+        self.relpos = RelPos(pair_dim, dist_bins)
+
+        # MSA embedding layers
+        self.msa_proj = nn.Linear(MSA.N_MSA_FEATS, msa_dim)
+        self.target_proj = nn.Linear(target_dim, msa_dim)
 
     def forward(
         self,
         target_feat: torch.Tensor,
-        residue_index: torch.Tensor,
+        residue_idx: torch.Tensor,
         msa_feat: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        a = self.linear_pair_embed_target1(target_feat)
-        b = self.linear_pair_embed_target2(target_feat)
-        pair_rep = a.unsqueeze(1) + b.unsqueeze(0)
-        pair_rep = pair_rep + self.relpos(residue_index)
+        # Embed target sequence and relative residue positions
+        pair1 = self.pair_proj1(target_feat)
+        pair2 = self.pair_proj2(target_feat)
+        pair_rep = pair1.unsqueeze(1) + pair2.unsqueeze(0)
+        pair_rep = pair_rep + self.relpos(residue_idx)
 
-        msa_rep = self.linear_msa_embed_msa(msa_feat) + self.linear_msa_embed_target(
-            target_feat
-        )
+        # Embed MSA and target sequence
+        msa_rep = self.msa_proj(msa_feat) + self.target_proj(target_feat)
 
         return msa_rep, pair_rep
 
 
 class RecyclingEmbedder(nn.Module):
-    def __init__(
-        self, msa_embed_dim: int, pair_embed_dim: int, bins: torch.Tensor
-    ) -> None:
+    def __init__(self, msa_dim: int, pair_dim: int, bins: torch.Tensor) -> None:
         super().__init__()
         n_bins = len(bins)
-        self.one_hot_cb_dist = OneHotNearestBin(bins)
-        self.linear_pair_embed_bins = nn.Linear(n_bins, pair_embed_dim)
-        self.layer_norm_pair = nn.LayerNorm((pair_embed_dim,))
-        self.layer_norm_msa = nn.LayerNorm((msa_embed_dim,))
+        self.cb_bin = OneHotNearestBin(bins)
+        self.cb_proj = nn.Linear(n_bins, pair_dim)
+        self.layer_norm_pair = nn.LayerNorm((pair_dim,))
+        self.layer_norm_msa = nn.LayerNorm((msa_dim,))
 
     def forward(
         self,
-        target_msa_rep: torch.Tensor,
+        msa_rep: torch.Tensor,
         pair_rep: torch.Tensor,
-        prev_struct_rep_cb: torch.Tensor,
+        prev_struct_cb: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        target_msa_rep = msa_rep[0]
+
         # Embed CB atom distance information
-        cb_dist_matrix = torch.cdist(prev_struct_rep_cb, prev_struct_rep_cb, p=2)
-        pair_embed = self.linear_pair_embed_bins(self.one_hot_cb_dist(cb_dist_matrix))
+        cb_dists = torch.cdist(prev_struct_cb, prev_struct_cb, p=2)
+        pair_rep_cb = self.cb_proj(self.cb_bin(cb_dists))
 
-        # Embed Evoformer outputs
-        new_pair_rep = pair_embed + self.layer_norm_pair(pair_rep)
-        new_target_msa_rep = self.layer_norm_msa(target_msa_rep)
+        # Update representations with recycled information
+        pair_update = pair_rep_cb + self.layer_norm_pair(pair_rep)
+        target_msa_update = self.layer_norm_msa(target_msa_rep)
 
-        return new_target_msa_rep, new_pair_rep
+        pair_rep = pair_rep + pair_update
+        msa_rep[0] = msa_rep[0] + target_msa_update
+
+        return msa_rep, pair_rep

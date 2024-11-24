@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from typing import List
-from xfold.model.embedder import InputEmbedder, RecyclingEmbedder
+from xfold.model.embedder import InputEmbedder, RecyclingEmbedder, TemplateEmbedder
 from xfold.protein.sequence import MSA
 from xfold.protein.structure import ProteinStructure, TemplateProtein
 
@@ -16,14 +16,16 @@ class AlphaFold2Config:
     max_n_extra_msa_seqs: int = 1024
 
     # Embedding
-    msa_embed_dim: int = 256
-    pair_embed_dim: int = 128
+    msa_dim: int = 256
+    pair_dim: int = 128
+
     ## Input embedding
-    max_relative_residue_dist: int = 32
+    max_relpos_dist: int = 32
+
     ## Recycling embedding
-    min_beta_carbon_dist: float = 3.375
-    max_beta_carbon_dist: float = 21.375
-    n_beta_carbon_dist_bins: int = 15
+    min_cb_dist: float = 3.375
+    max_cb_dist: float = 21.375
+    n_cb_bins: int = 15
 
 
 class AlphaFold2(nn.Module):
@@ -33,12 +35,12 @@ class AlphaFold2(nn.Module):
         n_ensembles: int = 1,
         max_n_msa_seqs: int = 512,
         max_n_extra_msa_seqs: int = 1024,
-        msa_embed_dim: int = 256,
-        pair_embed_dim: int = 128,
-        max_relative_residue_dist: int = 32,
-        min_beta_carbon_dist: float = 3.375,
-        max_beta_carbon_dist: float = 21.375,
-        n_beta_carbon_dist: int = 15,
+        msa_dim: int = 256,
+        pair_dim: int = 128,
+        max_relpos_dist: int = 32,
+        min_cb_dist: float = 3.375,
+        max_cb_dist: float = 21.375,
+        n_cb_bins: int = 15,
     ):
         super().__init__()
         self.n_cycling_iters = n_recycling_iters
@@ -46,16 +48,10 @@ class AlphaFold2(nn.Module):
         self.max_n_msa_seqs = max_n_msa_seqs
         self.max_n_extra_msa_seqs = max_n_extra_msa_seqs
 
-        self.input_embedder = InputEmbedder(
-            msa_embed_dim, pair_embed_dim, max_relative_residue_dist
-        )
+        self.input_embedder = InputEmbedder(msa_dim, pair_dim, max_relpos_dist)
 
-        beta_carbon_bins = torch.linspace(
-            min_beta_carbon_dist, max_beta_carbon_dist, n_beta_carbon_dist
-        )
-        self.recycling_embedder = RecyclingEmbedder(
-            msa_embed_dim, pair_embed_dim, beta_carbon_bins
-        )
+        cb_bins = torch.linspace(min_cb_dist, max_cb_dist, n_cb_bins)
+        self.recycling_embedder = RecyclingEmbedder(msa_dim, pair_dim, cb_bins)
 
     def forward(
         self,
@@ -90,12 +86,9 @@ class AlphaFold2(nn.Module):
                 )
 
                 # Recycling embedder
-                target_msa_rep = msa_rep[0]
-                _target_msa_rep, _pair_rep = self.recycling_embedder(
-                    target_msa_rep, pair_rep, prev_avg_struct_cb
+                msa_rep, pair_rep = self.recycling_embedder(
+                    msa_rep, pair_rep, prev_avg_struct_cb
                 )
-                msa_rep[0] = target_msa_rep + _target_msa_rep
-                pair_rep = pair_rep + _pair_rep
 
                 # Templates embedder
 
