@@ -27,6 +27,13 @@ class AlphaFold2Config:
     max_cb_dist: float = 21.375
     n_cb_bins: int = 15
 
+    ## Template embedding
+    temp_dim: int = 64
+    n_tri_attn_heads: int = 4
+    pair_trans_dim_scale_factor: int = 2
+    n_pw_attn_heads: int = 4
+    p_dropout_temp_pair_stack: float = 0.25
+
 
 class AlphaFold2(nn.Module):
     def __init__(
@@ -41,6 +48,11 @@ class AlphaFold2(nn.Module):
         min_cb_dist: float = 3.375,
         max_cb_dist: float = 21.375,
         n_cb_bins: int = 15,
+        temp_dim: int = 64,
+        n_tri_attn_heads: int = 4,
+        pair_trans_dim_scale_factor: int = 2,
+        n_pw_attn_heads: int = 4,
+        p_dropout_temp_pair_stack: float = 0.25,
     ):
         super().__init__()
         self.n_cycling_iters = n_recycling_iters
@@ -52,6 +64,16 @@ class AlphaFold2(nn.Module):
 
         cb_bins = torch.linspace(min_cb_dist, max_cb_dist, n_cb_bins)
         self.recycling_embedder = RecyclingEmbedder(msa_dim, pair_dim, cb_bins)
+
+        self.template_embedder = TemplateEmbedder(
+            msa_dim,
+            pair_dim,
+            temp_dim,
+            n_tri_attn_heads,
+            pair_trans_dim_scale_factor,
+            n_pw_attn_heads,
+            p_dropout_temp_pair_stack,
+        )
 
     def forward(
         self,
@@ -65,6 +87,13 @@ class AlphaFold2(nn.Module):
         residue_index = target.seq.seq_index
         target_feat = target.seq.seq_one_hot
         N_res, N_coords = target.seq.length(), 3
+
+        temp_angle_feats = torch.stack(
+            [temp.template_angle_feat for temp in templates], dim=0
+        )
+        temp_pair_feats = torch.stack(
+            [temp.template_pair_feat for temp in templates], dim=0
+        )
 
         prev_avg_msa_rep = 0
         prev_avg_pair_rep = 0
@@ -91,6 +120,9 @@ class AlphaFold2(nn.Module):
                 )
 
                 # Templates embedder
+                msa_rep, pair_rep = self.template_embedder(
+                    msa_rep, pair_rep, temp_angle_feats, temp_pair_feats
+                )
 
                 # Extra MSAs embedder
 
