@@ -14,6 +14,11 @@ from xfold.model.common import (
     TriangleMultiplicationOutgoing,
     TriangleMultiplicationIncoming,
 )
+from xfold.model.alphafold2.evoformer import (
+    PairTransition,
+    MSATransition,
+    MSARowAttentionWithPairBias,
+)
 from xfold.protein.sequence import AminoAcidVocab, MSA
 from xfold.protein.structure import TemplateProtein
 
@@ -84,7 +89,8 @@ class RecyclingEmbedder(nn.Module):
         pair_rep: torch.Tensor,
         prev_struct_cb: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        target_msa_rep = msa_rep[0]
+        TARGET_SEQ_INDEX = 0
+        target_msa_rep = msa_rep[TARGET_SEQ_INDEX]
 
         # Embed CB atom distance information
         cb_dists = torch.cdist(prev_struct_cb, prev_struct_cb, p=2)
@@ -95,27 +101,9 @@ class RecyclingEmbedder(nn.Module):
         target_msa_update = self.layer_norm_msa(target_msa_rep)
 
         pair_rep = pair_rep + pair_update
-        msa_rep[0] = msa_rep[0] + target_msa_update
+        msa_rep[TARGET_SEQ_INDEX] = msa_rep[TARGET_SEQ_INDEX] + target_msa_update
 
         return msa_rep, pair_rep
-
-
-class TransitionBase(nn.Module):
-    def __init__(self, input_dim: int, dim_scale: int):
-        super().__init__()
-        expanded_dim = dim_scale * input_dim
-        self.layer_norm = nn.LayerNorm(input_dim)
-        self.expand_dim = nn.Linear(input_dim, expanded_dim)
-        self.out_proj = nn.Sequential(nn.ReLU(), nn.Linear(expanded_dim, input_dim))
-
-    def forward(self, pair_rep: torch.Tensor) -> torch.Tensor:
-        pair_rep = self.layer_norm(pair_rep)
-        pair_rep = self.out_proj(self.expand_dim(pair_rep))
-        return pair_rep
-
-
-PairTransition = TransitionBase
-MSATransition = TransitionBase
 
 
 class TemplatePairBlock(nn.Module):
@@ -250,72 +238,6 @@ class TemplateEmbedder(nn.Module):
         return msa_rep, pair_rep
 
 
-class MSARowAttentionWithPairBias(nn.Module):
-    def __init__(
-        self, msa_dim: int, pair_dim: int, proj_dim: int, n_heads: int
-    ) -> None:
-        super().__init__()
-        self.n_heads = n_heads
-        self.proj_dim = proj_dim
-        self.inv_sqrt_dim = 1 / (proj_dim**0.5)
-
-        self.layer_norm = nn.LayerNorm(msa_dim)
-        self.to_qkv = LinearNoBias(msa_dim, 3 * n_heads * proj_dim)
-        self.to_b = nn.Sequential(
-            nn.LayerNorm(pair_dim), LinearNoBias(pair_dim, n_heads)
-        )
-        self.to_g = LinearSigmoid(msa_dim, n_heads * proj_dim)
-
-        self.out_proj = nn.Linear(n_heads * proj_dim, msa_dim)
-
-    def forward(self, msa_rep: torch.Tensor, pair_rep: torch.Tensor) -> torch.Tensor:
-        qkv_shape = (*msa_rep.shape[:-1], self.proj_dim, self.n_heads)
-        msa_rep = self.layer_norm(msa_rep)
-
-        qkv = self.to_qkv(msa_rep).chunk(3, dim=-1)
-        q, k, v = map(lambda x: x.view(qkv_shape), qkv)
-        b = self.to_b(pair_rep).unsqueeze(-2).unsqueeze(0)
-        g = self.to_g(msa_rep).view(qkv_shape)
-
-        a = F.softmax(
-            self.inv_sqrt_dim * torch.einsum("sidh,sjdh->sijdh", q, k) + b, dim=2
-        )
-
-        out = g * torch.einsum("sijdh,sjdh->sidh", a, v)
-        out = self.out_proj(out.flatten(-2, -1))
-
-        return out
-
-
-class MSAColumnAttention(nn.Module):
-    def __init__(self, msa_dim: int, proj_dim: int, n_heads: int) -> None:
-        super().__init__()
-        self.n_heads = n_heads
-        self.proj_dim = proj_dim
-        self.inv_sqrt_dim = 1 / (proj_dim**0.5)
-
-        self.layer_norm = nn.LayerNorm(msa_dim)
-        self.to_qkv = LinearNoBias(msa_dim, 3 * n_heads * proj_dim)
-        self.to_g = LinearSigmoid(msa_dim, n_heads * proj_dim)
-
-        self.out_proj = nn.Linear(n_heads * proj_dim, msa_dim)
-
-    def forward(self, msa_rep: torch.Tensor) -> torch.Tensor:
-        qkv_shape = (*msa_rep.shape[:-1], self.proj_dim, self.n_heads)
-        msa_rep = self.layer_norm(msa_rep)
-
-        qkv = self.to_qkv(msa_rep).chunk(3, dim=-1)
-        q, k, v = map(lambda x: x.view(qkv_shape), qkv)
-        g = self.to_g(msa_rep).view(qkv_shape)
-
-        a = F.softmax(self.inv_sqrt_dim * torch.einsum("sidh,tidh->stidh", q, k), dim=1)
-
-        out = g * torch.einsum("stidh,stdh->sidh", a, v)
-        out = self.out_proj(out.flatten(-2, -1))
-
-        return out
-
-
 class MSAColumnGlobalAttention(nn.Module):
     def __init__(self, msa_dim: int, proj_dim: int, n_heads: int) -> None:
         super().__init__()
@@ -353,7 +275,7 @@ class ExtraMSABlock(nn.Module):
         extra_msa_dim: int,
         pair_dim: int,
         msa_row_attn_dim: int,
-        msa_col_attn_dim: int,
+        msa_col_global_attn_dim: int,
         outer_prod_msa_dim: int,
         n_tri_attn_heads: int,
         n_msa_attn_heads: int,
@@ -367,7 +289,7 @@ class ExtraMSABlock(nn.Module):
         )
         self.dropout_row = DropoutColumnwise(0.15)
         self.msa_global_attn = MSAColumnGlobalAttention(
-            extra_msa_dim, msa_col_attn_dim, n_msa_attn_heads
+            extra_msa_dim, msa_col_global_attn_dim, n_msa_attn_heads
         )
         self.msa_trans = MSATransition(extra_msa_dim, msa_trans_dim_scale)
 
@@ -420,7 +342,7 @@ class ExtraMSAStack(nn.Module):
         extra_msa_dim: int,
         pair_dim: int,
         msa_row_attn_dim: int,
-        msa_col_attn_dim: int,
+        msa_col_global_attn_dim: int,
         outer_prod_msa_dim: int,
         n_tri_attn_heads: int,
         n_msa_attn_heads: int,
@@ -435,7 +357,7 @@ class ExtraMSAStack(nn.Module):
                     extra_msa_dim,
                     pair_dim,
                     msa_row_attn_dim,
-                    msa_col_attn_dim,
+                    msa_col_global_attn_dim,
                     outer_prod_msa_dim,
                     n_tri_attn_heads,
                     n_msa_attn_heads,
@@ -460,7 +382,7 @@ class ExtraMSAEmbedder(nn.Module):
         extra_msa_dim: int,
         pair_dim: int,
         msa_row_attn_dim: int,
-        msa_col_attn_dim: int,
+        msa_col_global_attn_dim: int,
         outer_prod_msa_dim: int,
         n_tri_attn_heads: int,
         n_msa_attn_heads: int,
@@ -474,7 +396,7 @@ class ExtraMSAEmbedder(nn.Module):
             extra_msa_dim,
             pair_dim,
             msa_row_attn_dim,
-            msa_col_attn_dim,
+            msa_col_global_attn_dim,
             outer_prod_msa_dim,
             n_tri_attn_heads,
             n_msa_attn_heads,

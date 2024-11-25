@@ -7,6 +7,7 @@ from xfold.model.alphafold2.embedder import (
     TemplateEmbedder,
     ExtraMSAEmbedder,
 )
+from xfold.model.alphafold2.evoformer import EvoformerStack
 from xfold.protein.sequence import MSA
 from xfold.protein.structure import ProteinStructure, TemplateProtein
 
@@ -41,13 +42,19 @@ class AlphaFold2Config:
 
     ## Extra MSA embedding
     extra_msa_dim: int = 64
-    msa_row_attn_dim: int = 32
-    msa_col_attn_dim: int = 8
+    extra_msa_row_attn_dim: int = 8
+    extra_msa_col_global_attn_dim: int = 8
     outer_prod_msa_dim: int = 32
     n_msa_attn_heads: int = 8
     n_extra_msa_blocks: int = 4
     msa_trans_dim_scale: int = 4
     pair_trans_dim_scale: int = 4
+
+    # Evoformer (mostly shared with extra MSA)
+    single_dim: int = 384
+    msa_row_attn_dim: int = 32
+    msa_col_attn_dim: int = 32
+    n_evoformer_blocks: int = 48
 
 
 class AlphaFold2(nn.Module):
@@ -69,13 +76,17 @@ class AlphaFold2(nn.Module):
         n_temp_pair_blocks: int = 2,
         temp_pair_trans_dim_scale: int = 2,
         extra_msa_dim: int = 64,
-        msa_row_attn_dim: int = 32,
-        msa_col_attn_dim: int = 8,
+        extra_msa_row_attn_dim: int = 32,
+        extra_msa_col_global_attn_dim: int = 8,
         outer_prod_msa_dim: int = 32,
         n_msa_attn_heads: int = 8,
         n_extra_msa_blocks: int = 4,
         msa_trans_dim_scale: int = 4,
         pair_trans_dim_scale: int = 4,
+        single_dim: int = 384,
+        msa_row_attn_dim: int = 32,
+        msa_col_attn_dim: int = 32,
+        n_evoformer_blocks: int = 48,
     ):
         super().__init__()
         self.n_cycling_iters = n_recycling_iters
@@ -83,6 +94,7 @@ class AlphaFold2(nn.Module):
         self.max_n_msa_seqs = max_n_msa_seqs
         self.max_n_extra_msa_seqs = max_n_extra_msa_seqs
 
+        # Embedders of evolutionary information
         self.input_embedder = InputEmbedder(msa_dim, pair_dim, max_relpos_dist)
 
         cb_bins = torch.linspace(min_cb_dist, max_cb_dist, n_cb_bins)
@@ -101,6 +113,21 @@ class AlphaFold2(nn.Module):
         self.extra_msa_embedder = ExtraMSAEmbedder(
             extra_msa_dim,
             pair_dim,
+            extra_msa_row_attn_dim,
+            extra_msa_col_global_attn_dim,
+            outer_prod_msa_dim,
+            n_tri_attn_heads,
+            n_msa_attn_heads,
+            msa_trans_dim_scale,
+            pair_trans_dim_scale,
+            n_extra_msa_blocks,
+        )
+
+        # Evoformer stack
+        self.evoformer_stack = EvoformerStack(
+            msa_dim,
+            pair_dim,
+            single_dim,
             msa_row_attn_dim,
             msa_col_attn_dim,
             outer_prod_msa_dim,
@@ -108,7 +135,7 @@ class AlphaFold2(nn.Module):
             n_msa_attn_heads,
             msa_trans_dim_scale,
             pair_trans_dim_scale,
-            n_extra_msa_blocks,
+            n_evoformer_blocks,
         )
 
     def forward(
@@ -118,6 +145,7 @@ class AlphaFold2(nn.Module):
         extra_msa: MSA,
         templates: List[TemplateProtein],
     ) -> ProteinStructure:
+        TARGET_SEQ_INDEX = 0
         n_ensembles = 1 if self.training else self.n_ensembles
 
         residue_index = target.seq.seq_index
@@ -131,14 +159,14 @@ class AlphaFold2(nn.Module):
             [temp.template_pair_feat for temp in templates], dim=0
         )
 
-        prev_avg_msa_rep = 0
+        prev_avg_target_msa_rep = 0
         prev_avg_pair_rep = 0
         prev_avg_struct_cb = torch.zeros((N_res, N_coords))
-        for i_cycle in range(self.n_cycling_iters):
-            avg_msa_rep = 0
+        for _ in range(self.n_cycling_iters):
+            avg_target_msa_rep = 0
             avg_pair_rep = 0
-            avg_single_seq_rep = 0
-            for i_ensemble in range(n_ensembles):
+            avg_single_rep = 0
+            for _ in range(n_ensembles):
                 msa_cn = msa.sample_msa(self.max_n_msa_seqs)
                 extra_msa_cn = extra_msa.sample_msa(self.max_n_extra_msa_seqs)
 
@@ -161,5 +189,15 @@ class AlphaFold2(nn.Module):
                 pair_rep = self.extra_msa_embedder(extra_msa_feat_cn, pair_rep)
 
                 # Evoformer stack
+                msa_rep, pair_rep, single_rep = self.evoformer_stack(msa_rep, pair_rep)
+                target_msa_rep = msa_rep[TARGET_SEQ_INDEX]
+
+                avg_target_msa_rep = avg_target_msa_rep + target_msa_rep
+                avg_pair_rep = avg_pair_rep + pair_rep
+                avg_single_rep = avg_single_rep + single_rep
+
+            avg_target_msa_rep = avg_target_msa_rep / n_ensembles
+            avg_pair_rep = avg_pair_rep / n_ensembles
+            avg_single_rep = avg_single_rep / n_ensembles
 
             # Structure module
