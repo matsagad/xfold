@@ -58,7 +58,7 @@ class TriangleAttentionBase(nn.Module):
         super().__init__()
         self.n_heads = n_heads
         self.proj_dim = proj_dim
-        self.inv_sqrt_proj_dim = 1 / (proj_dim**0.5)
+        self.inv_sqrt_dim = 1 / (proj_dim**0.5)
 
         self.layer_norm = nn.LayerNorm(input_dim)
         self.to_qkv = LinearNoBias(input_dim, 3 * n_heads * proj_dim)
@@ -78,14 +78,14 @@ class TriangleAttentionBase(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: [N_RES, N_RES, N_FEATS]
-        mat_shape = (*x.shape[:2], self.proj_dim, self.n_heads)
+        qkv_shape = (*x.shape[:2], self.proj_dim, self.n_heads)
 
         # Project inputs
         x = self.layer_norm(x)
         qkv = self.to_qkv(x).chunk(3, dim=-1)
-        q, k, v = map(lambda u: u.view(mat_shape), qkv)
-        b = self.to_b(x).view(mat_shape)
-        g = self.to_g(x).view(mat_shape)
+        q, k, v = map(lambda u: u.view(qkv_shape), qkv)
+        b = self.to_b(x).view(qkv_shape)
+        g = self.to_g(x).view(qkv_shape)
 
         # Compute attention
         out = self.compute_gated_attention(q, k, v, b, g)
@@ -105,8 +105,7 @@ class TriangleAttentionStartingNode(TriangleAttentionBase):
     ) -> torch.Tensor:
         ## a_ijk := softmax_k( 1/sqrt(c) * q_ij^T k_ik + b_jk )
         a = F.softmax(
-            self.inv_sqrt_proj_dim * torch.einsum("ijdh,ikdh->ijkdh", q, k)
-            + b.unsqueeze(0),
+            self.inv_sqrt_dim * torch.einsum("ijdh,ikdh->ijkdh", q, k) + b.unsqueeze(0),
             dim=2,
         )
         ## o_ij := g_ij \odot \sum_k a_ijk * v_ik
@@ -125,7 +124,7 @@ class TriangleAttentionEndingNode(TriangleAttentionBase):
     ) -> torch.Tensor:
         ## a_ijk := softmax_k( 1/sqrt(c) * q_ij^T k_kj + b_ki )
         a = F.softmax(
-            self.inv_sqrt_proj_dim * torch.einsum("ijdh,kjdh->ijkdh", q, k)
+            self.inv_sqrt_dim * torch.einsum("ijdh,kjdh->ijkdh", q, k)
             + torch.einsum("iokdh->koidh", b.unsqueeze(1)),
             dim=2,
         )
@@ -177,3 +176,24 @@ class TriangleMultiplicationIncoming(TriangleMultiplicationBase):
         self, edge1: torch.Tensor, edge2: torch.Tensor
     ) -> torch.Tensor:
         return torch.einsum("kid,kjd->ijd", edge1, edge2)
+
+
+class OuterProductMean(nn.Module):
+    def __init__(self, input_dim: int, proj_dim: int, out_dim: int) -> None:
+        super().__init__()
+        self.layer_norm = nn.LayerNorm(input_dim)
+        self.proj1 = nn.Linear(input_dim, proj_dim)
+        self.proj2 = nn.Linear(input_dim, proj_dim)
+
+        self.out_proj = nn.Linear(proj_dim * proj_dim, out_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.layer_norm(x)
+
+        a = self.proj1(x)
+        b = self.proj2(x)
+        o = (a.unsqueeze(-1) * b.unsqueeze(-2)).mean(dim=0).flatten(-2, -1)
+
+        z = self.out_proj(o)
+
+        return z

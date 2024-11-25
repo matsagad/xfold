@@ -1,7 +1,12 @@
 import torch
 import torch.nn as nn
 from typing import List
-from xfold.model.embedder import InputEmbedder, RecyclingEmbedder, TemplateEmbedder
+from xfold.model.alphafold2.embedder import (
+    InputEmbedder,
+    RecyclingEmbedder,
+    TemplateEmbedder,
+    ExtraMSAEmbedder,
+)
 from xfold.protein.sequence import MSA
 from xfold.protein.structure import ProteinStructure, TemplateProtein
 
@@ -30,9 +35,19 @@ class AlphaFold2Config:
     ## Template embedding
     temp_dim: int = 64
     n_tri_attn_heads: int = 4
-    pair_trans_dim_scale_factor: int = 2
     n_pw_attn_heads: int = 4
-    p_dropout_temp_pair_stack: float = 0.25
+    n_temp_pair_blocks: int = 2
+    temp_pair_trans_dim_scale: int = 2
+
+    ## Extra MSA embedding
+    extra_msa_dim: int = 64
+    msa_row_attn_dim: int = 32
+    msa_col_attn_dim: int = 8
+    outer_prod_msa_dim: int = 32
+    n_msa_attn_heads: int = 8
+    n_extra_msa_blocks: int = 4
+    msa_trans_dim_scale: int = 4
+    pair_trans_dim_scale: int = 4
 
 
 class AlphaFold2(nn.Module):
@@ -50,9 +65,17 @@ class AlphaFold2(nn.Module):
         n_cb_bins: int = 15,
         temp_dim: int = 64,
         n_tri_attn_heads: int = 4,
-        pair_trans_dim_scale_factor: int = 2,
         n_pw_attn_heads: int = 4,
-        p_dropout_temp_pair_stack: float = 0.25,
+        n_temp_pair_blocks: int = 2,
+        temp_pair_trans_dim_scale: int = 2,
+        extra_msa_dim: int = 64,
+        msa_row_attn_dim: int = 32,
+        msa_col_attn_dim: int = 8,
+        outer_prod_msa_dim: int = 32,
+        n_msa_attn_heads: int = 8,
+        n_extra_msa_blocks: int = 4,
+        msa_trans_dim_scale: int = 4,
+        pair_trans_dim_scale: int = 4,
     ):
         super().__init__()
         self.n_cycling_iters = n_recycling_iters
@@ -70,9 +93,22 @@ class AlphaFold2(nn.Module):
             pair_dim,
             temp_dim,
             n_tri_attn_heads,
-            pair_trans_dim_scale_factor,
             n_pw_attn_heads,
-            p_dropout_temp_pair_stack,
+            n_temp_pair_blocks,
+            temp_pair_trans_dim_scale,
+        )
+
+        self.extra_msa_embedder = ExtraMSAEmbedder(
+            extra_msa_dim,
+            pair_dim,
+            msa_row_attn_dim,
+            msa_col_attn_dim,
+            outer_prod_msa_dim,
+            n_tri_attn_heads,
+            n_msa_attn_heads,
+            msa_trans_dim_scale,
+            pair_trans_dim_scale,
+            n_extra_msa_blocks,
         )
 
     def forward(
@@ -113,18 +149,16 @@ class AlphaFold2(nn.Module):
                 msa_rep, pair_rep = self.input_embedder(
                     target_feat, residue_index, msa_feat_cn
                 )
-
                 # Recycling embedder
                 msa_rep, pair_rep = self.recycling_embedder(
                     msa_rep, pair_rep, prev_avg_struct_cb
                 )
-
                 # Templates embedder
                 msa_rep, pair_rep = self.template_embedder(
                     msa_rep, pair_rep, temp_angle_feats, temp_pair_feats
                 )
-
                 # Extra MSAs embedder
+                pair_rep = self.extra_msa_embedder(extra_msa_feat_cn, pair_rep)
 
                 # Evoformer stack
 

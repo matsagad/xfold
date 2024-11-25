@@ -6,7 +6,9 @@ from xfold.model.common import (
     DropoutColumnwise,
     DropoutRowwise,
     LinearNoBias,
+    LinearSigmoid,
     OneHotNearestBin,
+    OuterProductMean,
     TriangleAttentionStartingNode,
     TriangleAttentionEndingNode,
     TriangleMultiplicationOutgoing,
@@ -98,10 +100,10 @@ class RecyclingEmbedder(nn.Module):
         return msa_rep, pair_rep
 
 
-class PairTransition(nn.Module):
-    def __init__(self, input_dim: int, dim_scale_factor: int):
+class TransitionBase(nn.Module):
+    def __init__(self, input_dim: int, dim_scale: int):
         super().__init__()
-        expanded_dim = dim_scale_factor * input_dim
+        expanded_dim = dim_scale * input_dim
         self.layer_norm = nn.LayerNorm(input_dim)
         self.expand_dim = nn.Linear(input_dim, expanded_dim)
         self.out_proj = nn.Sequential(nn.ReLU(), nn.Linear(expanded_dim, input_dim))
@@ -112,40 +114,56 @@ class PairTransition(nn.Module):
         return pair_rep
 
 
+PairTransition = TransitionBase
+MSATransition = TransitionBase
+
+
+class TemplatePairBlock(nn.Module):
+    def __init__(self, temp_dim: int, n_heads: int, pair_trans_dim_scale: int) -> None:
+        super().__init__()
+        self.update_pair_layers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    TriangleAttentionStartingNode(temp_dim, temp_dim, n_heads),
+                    DropoutRowwise(0.25),
+                ),
+                nn.Sequential(
+                    TriangleAttentionEndingNode(temp_dim, temp_dim, n_heads),
+                    DropoutColumnwise(0.25),
+                ),
+                nn.Sequential(
+                    TriangleMultiplicationOutgoing(temp_dim, temp_dim),
+                    DropoutRowwise(0.25),
+                ),
+                nn.Sequential(
+                    TriangleMultiplicationIncoming(temp_dim, temp_dim),
+                    DropoutRowwise(0.25),
+                ),
+                PairTransition(temp_dim, pair_trans_dim_scale),
+            ]
+        )
+
+    def forward(self, temp_rep: torch.Tensor) -> torch.Tensor:
+        for update_pair in self.update_pair_layers:
+            temp_rep = temp_rep + update_pair(temp_rep)
+        return temp_rep
+
+
 class TemplatePairStack(nn.Module):
     def __init__(
         self,
         temp_dim: int,
         n_heads: int,
         n_blocks: int,
-        p_dropout: float,
+        pair_trans_dim_scale: int,
     ) -> None:
         super().__init__()
-        self.update_pair_layers = nn.ModuleList()
-
-        for _ in range(n_blocks):
-            self.update_pair_layers.extend(
-                [
-                    nn.Sequential(
-                        TriangleAttentionStartingNode(temp_dim, temp_dim, n_heads),
-                        DropoutRowwise(p_dropout),
-                    ),
-                    nn.Sequential(
-                        TriangleAttentionEndingNode(temp_dim, temp_dim, n_heads),
-                        DropoutColumnwise(p_dropout),
-                    ),
-                    nn.Sequential(
-                        TriangleMultiplicationOutgoing(temp_dim, temp_dim),
-                        DropoutRowwise(p_dropout),
-                    ),
-                    nn.Sequential(
-                        TriangleMultiplicationIncoming(temp_dim, temp_dim),
-                        DropoutRowwise(p_dropout),
-                    ),
-                    PairTransition(temp_dim, 2),
-                ]
-            )
-
+        self.update_pair_layers = nn.ModuleList(
+            [
+                TemplatePairBlock(temp_dim, n_heads, pair_trans_dim_scale)
+                for _ in range(n_blocks)
+            ]
+        )
         self.layer_norm = nn.LayerNorm(temp_dim)
 
     def forward(self, temp_rep: torch.Tensor) -> torch.Tensor:
@@ -160,7 +178,7 @@ class TemplatePointwiseAttention(nn.Module):
         super().__init__()
         self.n_heads = n_heads
         self.temp_dim = temp_dim
-        self.inv_sqrt_temp_dim = 1 / (temp_dim**0.5)
+        self.inv_sqrt_dim = 1 / (temp_dim**0.5)
 
         self.to_q = LinearNoBias(pair_dim, n_heads * temp_dim)
         self.to_kv = LinearNoBias(temp_dim, 2 * n_heads * temp_dim)
@@ -176,7 +194,7 @@ class TemplatePointwiseAttention(nn.Module):
         k, v = map(lambda u: u.view(temp_proj_shape), kv)
 
         a = F.softmax(
-            self.inv_sqrt_temp_dim * torch.einsum("ijdh,sijdh->sijdh", q, k), dim=0
+            self.inv_sqrt_dim * torch.einsum("ijdh,sijdh->sijdh", q, k), dim=0
         )
         out = torch.einsum("sijdh,sijdh->ijdh", a, v)
         pair_update = self.out_proj(out.flatten(-2, -1))
@@ -193,12 +211,11 @@ class TemplateEmbedder(nn.Module):
         pair_dim: int,
         temp_dim: int,
         n_tri_attn_heads: int,
-        pair_trans_dim_scale_factor: int,
         n_pw_attn_heads: int,
-        p_dropout: float,
+        n_temp_pair_blocks: int,
+        pair_trans_dim_scale: int,
     ) -> None:
         super().__init__()
-
         self.angle_feat_proj = nn.Sequential(
             nn.Linear(TemplateProtein.N_TEMP_ANGLE_FEATS, msa_dim),
             nn.ReLU(),
@@ -206,7 +223,10 @@ class TemplateEmbedder(nn.Module):
         )
         self.pair_feat_proj = nn.Linear(TemplateProtein.N_TEMP_PAIR_FEATS, temp_dim)
         self.temp_stack = TemplatePairStack(
-            temp_dim, n_tri_attn_heads, pair_trans_dim_scale_factor, p_dropout
+            temp_dim,
+            n_tri_attn_heads,
+            n_temp_pair_blocks,
+            pair_trans_dim_scale,
         )
         self.temp_pw_attn = TemplatePointwiseAttention(
             pair_dim, temp_dim, n_pw_attn_heads
@@ -228,3 +248,244 @@ class TemplateEmbedder(nn.Module):
 
         pair_rep = self.temp_pw_attn(pair_rep, temp_rep)
         return msa_rep, pair_rep
+
+
+class MSARowAttentionWithPairBias(nn.Module):
+    def __init__(
+        self, msa_dim: int, pair_dim: int, proj_dim: int, n_heads: int
+    ) -> None:
+        super().__init__()
+        self.n_heads = n_heads
+        self.proj_dim = proj_dim
+        self.inv_sqrt_dim = 1 / (proj_dim**0.5)
+
+        self.layer_norm = nn.LayerNorm(msa_dim)
+        self.to_qkv = LinearNoBias(msa_dim, 3 * n_heads * proj_dim)
+        self.to_b = nn.Sequential(
+            nn.LayerNorm(pair_dim), LinearNoBias(pair_dim, n_heads)
+        )
+        self.to_g = LinearSigmoid(msa_dim, n_heads * proj_dim)
+
+        self.out_proj = nn.Linear(n_heads * proj_dim, msa_dim)
+
+    def forward(self, msa_rep: torch.Tensor, pair_rep: torch.Tensor) -> torch.Tensor:
+        qkv_shape = (*msa_rep.shape[:-1], self.proj_dim, self.n_heads)
+        msa_rep = self.layer_norm(msa_rep)
+
+        qkv = self.to_qkv(msa_rep).chunk(3, dim=-1)
+        q, k, v = map(lambda x: x.view(qkv_shape), qkv)
+        b = self.to_b(pair_rep).unsqueeze(-2).unsqueeze(0)
+        g = self.to_g(msa_rep).view(qkv_shape)
+
+        a = F.softmax(
+            self.inv_sqrt_dim * torch.einsum("sidh,sjdh->sijdh", q, k) + b, dim=2
+        )
+
+        out = g * torch.einsum("sijdh,sjdh->sidh", a, v)
+        out = self.out_proj(out.flatten(-2, -1))
+
+        return out
+
+
+class MSAColumnAttention(nn.Module):
+    def __init__(self, msa_dim: int, proj_dim: int, n_heads: int) -> None:
+        super().__init__()
+        self.n_heads = n_heads
+        self.proj_dim = proj_dim
+        self.inv_sqrt_dim = 1 / (proj_dim**0.5)
+
+        self.layer_norm = nn.LayerNorm(msa_dim)
+        self.to_qkv = LinearNoBias(msa_dim, 3 * n_heads * proj_dim)
+        self.to_g = LinearSigmoid(msa_dim, n_heads * proj_dim)
+
+        self.out_proj = nn.Linear(n_heads * proj_dim, msa_dim)
+
+    def forward(self, msa_rep: torch.Tensor) -> torch.Tensor:
+        qkv_shape = (*msa_rep.shape[:-1], self.proj_dim, self.n_heads)
+        msa_rep = self.layer_norm(msa_rep)
+
+        qkv = self.to_qkv(msa_rep).chunk(3, dim=-1)
+        q, k, v = map(lambda x: x.view(qkv_shape), qkv)
+        g = self.to_g(msa_rep).view(qkv_shape)
+
+        a = F.softmax(self.inv_sqrt_dim * torch.einsum("sidh,tidh->stidh", q, k), dim=1)
+
+        out = g * torch.einsum("stidh,stdh->sidh", a, v)
+        out = self.out_proj(out.flatten(-2, -1))
+
+        return out
+
+
+class MSAColumnGlobalAttention(nn.Module):
+    def __init__(self, msa_dim: int, proj_dim: int, n_heads: int) -> None:
+        super().__init__()
+        self.n_heads = n_heads
+        self.proj_dim = proj_dim
+        self.inv_sqrt_dim = 1 / (proj_dim**0.5)
+
+        self.layer_norm = nn.LayerNorm(msa_dim)
+        self.to_qkv = LinearNoBias(msa_dim, (n_heads + 2) * proj_dim)
+        self.to_g = LinearSigmoid(msa_dim, n_heads * proj_dim)
+
+        self.out_proj = nn.Linear(n_heads * proj_dim, msa_dim)
+
+    def forward(self, msa_rep: torch.Tensor) -> torch.Tensor:
+        q_shape = (*msa_rep.shape[:-1], self.proj_dim, self.n_heads)
+        msa_rep = self.layer_norm(msa_rep)
+
+        q, k, v = self.to_qkv(msa_rep).split(
+            (self.n_heads * self.proj_dim, self.proj_dim, self.proj_dim), dim=-1
+        )
+        q = q.view(q_shape).mean(dim=0)
+        g = self.to_g(msa_rep).view(q_shape)
+
+        a = F.softmax(self.inv_sqrt_dim * torch.einsum("idh,tid->tidh", q, k), dim=0)
+
+        out = g * torch.einsum("tidh,tid->idh", a, v).unsqueeze(0)
+        out = self.out_proj(out.flatten(-2, -1))
+
+        return out
+
+
+class ExtraMSABlock(nn.Module):
+    def __init__(
+        self,
+        extra_msa_dim: int,
+        pair_dim: int,
+        msa_row_attn_dim: int,
+        msa_col_attn_dim: int,
+        outer_prod_msa_dim: int,
+        n_tri_attn_heads: int,
+        n_msa_attn_heads: int,
+        msa_trans_dim_scale: int,
+        pair_trans_dim_scale: int,
+    ) -> None:
+        super().__init__()
+        # MSA stack
+        self.msa_pair_row_attn = MSARowAttentionWithPairBias(
+            extra_msa_dim, pair_dim, msa_row_attn_dim, n_msa_attn_heads
+        )
+        self.dropout_row = DropoutColumnwise(0.15)
+        self.msa_global_attn = MSAColumnGlobalAttention(
+            extra_msa_dim, msa_col_attn_dim, n_msa_attn_heads
+        )
+        self.msa_trans = MSATransition(extra_msa_dim, msa_trans_dim_scale)
+
+        # Communication
+        self.msa_to_pair = OuterProductMean(extra_msa_dim, outer_prod_msa_dim, pair_dim)
+
+        # Pair stack
+        self.update_pair_layers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    TriangleMultiplicationOutgoing(pair_dim, pair_dim),
+                    DropoutRowwise(0.25),
+                ),
+                nn.Sequential(
+                    TriangleMultiplicationIncoming(pair_dim, pair_dim),
+                    DropoutRowwise(0.25),
+                ),
+                nn.Sequential(
+                    TriangleAttentionStartingNode(pair_dim, pair_dim, n_tri_attn_heads),
+                    DropoutRowwise(0.25),
+                ),
+                nn.Sequential(
+                    TriangleAttentionEndingNode(pair_dim, pair_dim, n_tri_attn_heads),
+                    DropoutColumnwise(0.25),
+                ),
+                PairTransition(pair_dim, pair_trans_dim_scale),
+            ]
+        )
+
+    def forward(
+        self, extra_msa_rep: torch.Tensor, pair_rep: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        extra_msa_rep = extra_msa_rep + self.dropout_row(
+            self.msa_pair_row_attn(extra_msa_rep, pair_rep)
+        )
+        extra_msa_rep = extra_msa_rep + self.msa_global_attn(extra_msa_rep)
+        extra_msa_rep = extra_msa_rep + self.msa_trans(extra_msa_rep)
+
+        pair_rep = pair_rep + self.msa_to_pair(extra_msa_rep)
+
+        for update_pair in self.update_pair_layers:
+            pair_rep = pair_rep + update_pair(pair_rep)
+
+        return extra_msa_rep, pair_rep
+
+
+class ExtraMSAStack(nn.Module):
+    def __init__(
+        self,
+        extra_msa_dim: int,
+        pair_dim: int,
+        msa_row_attn_dim: int,
+        msa_col_attn_dim: int,
+        outer_prod_msa_dim: int,
+        n_tri_attn_heads: int,
+        n_msa_attn_heads: int,
+        msa_trans_dim_scale: int,
+        pair_trans_dim_scale: int,
+        n_blocks: int,
+    ) -> None:
+        super().__init__()
+        self.update_msa_pair_layers = nn.ModuleList(
+            [
+                ExtraMSABlock(
+                    extra_msa_dim,
+                    pair_dim,
+                    msa_row_attn_dim,
+                    msa_col_attn_dim,
+                    outer_prod_msa_dim,
+                    n_tri_attn_heads,
+                    n_msa_attn_heads,
+                    msa_trans_dim_scale,
+                    pair_trans_dim_scale,
+                )
+                for _ in range(n_blocks)
+            ]
+        )
+
+    def forward(
+        self, extra_msa_rep: torch.Tensor, pair_rep: torch.Tensor
+    ) -> torch.Tensor:
+        for update_msa_pair in self.update_msa_pair_layers:
+            extra_msa_rep, pair_rep = update_msa_pair(extra_msa_rep, pair_rep)
+        return pair_rep
+
+
+class ExtraMSAEmbedder(nn.Module):
+    def __init__(
+        self,
+        extra_msa_dim: int,
+        pair_dim: int,
+        msa_row_attn_dim: int,
+        msa_col_attn_dim: int,
+        outer_prod_msa_dim: int,
+        n_tri_attn_heads: int,
+        n_msa_attn_heads: int,
+        msa_trans_dim_scale: int,
+        pair_trans_dim_scale: int,
+        n_blocks: int,
+    ) -> None:
+        super().__init__()
+        self.extra_msa_proj = nn.Linear(MSA.N_EXTRA_MSA_FEATS, extra_msa_dim)
+        self.extra_msa_stack = ExtraMSAStack(
+            extra_msa_dim,
+            pair_dim,
+            msa_row_attn_dim,
+            msa_col_attn_dim,
+            outer_prod_msa_dim,
+            n_tri_attn_heads,
+            n_msa_attn_heads,
+            msa_trans_dim_scale,
+            pair_trans_dim_scale,
+            n_blocks,
+        )
+
+    def forward(
+        self, extra_msa_feat: torch.Tensor, pair_rep: torch.Tensor
+    ) -> torch.Tensor:
+        extra_msa_rep = self.extra_msa_proj(extra_msa_feat)
+        pair_rep = self.extra_msa_stack(extra_msa_rep, pair_rep)
+        return pair_rep
