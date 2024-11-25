@@ -35,6 +35,7 @@ class Sequence:
 
 class MSA:
     N_MSA_FEATS = 49
+    N_EXTRA_MSA_FEATS = 25
 
     def __init__(self, msa: List[str], is_extra: bool = False) -> None:
         self._validate_msa(msa)
