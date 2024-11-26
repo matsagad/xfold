@@ -2,13 +2,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
-from xfold.model.common import (
+from xfold.model.common.utils import (
     DropoutColumnwise,
     DropoutRowwise,
     LinearNoBias,
     LinearSigmoid,
     OneHotNearestBin,
     OuterProductMean,
+)
+from xfold.model.common.triangle_ops import (
     TriangleAttentionStartingNode,
     TriangleAttentionEndingNode,
     TriangleMultiplicationOutgoing,

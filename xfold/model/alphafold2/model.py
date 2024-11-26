@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from typing import List
-from xfold.model.alphafold2.embedder import (
+from xfold.model.alphafold2.embedders import (
     InputEmbedder,
     RecyclingEmbedder,
     TemplateEmbedder,
