@@ -184,9 +184,9 @@ class TemplatePointwiseAttention(nn.Module):
         k, v = map(lambda u: u.view(temp_proj_shape), kv)
 
         a = F.softmax(
-            self.inv_sqrt_dim * torch.einsum("ijdh,sijdh->sijdh", q, k), dim=0
+            self.inv_sqrt_dim * torch.einsum("ijdh,sijdh->sijh", q, k), dim=0
         )
-        out = torch.einsum("sijdh,sijdh->ijdh", a, v)
+        out = torch.einsum("sijh,sijdh->ijdh", a, v)
         pair_update = self.out_proj(out.flatten(-2, -1))
 
         pair_rep = pair_rep + pair_update
@@ -263,9 +263,9 @@ class MSAColumnGlobalAttention(nn.Module):
         q = q.view(q_shape).mean(dim=0)
         g = self.to_g(msa_rep).view(q_shape)
 
-        a = F.softmax(self.inv_sqrt_dim * torch.einsum("idh,tid->tidh", q, k), dim=0)
+        a = F.softmax(self.inv_sqrt_dim * torch.einsum("idh,tid->tih", q, k), dim=0)
 
-        out = g * torch.einsum("tidh,tid->idh", a, v).unsqueeze(0)
+        out = g * torch.einsum("tih,tid->idh", a, v).unsqueeze(0)
         out = self.out_proj(out.flatten(-2, -1))
 
         return out

@@ -13,7 +13,7 @@ class TriangleAttentionBase(nn.Module):
 
         self.layer_norm = nn.LayerNorm(input_dim)
         self.to_qkv = LinearNoBias(input_dim, 3 * n_heads * proj_dim)
-        self.to_b = LinearNoBias(input_dim, n_heads * proj_dim)
+        self.to_b = LinearNoBias(input_dim, n_heads)
         self.to_g = LinearSigmoid(input_dim, n_heads * proj_dim)
         self.out_proj = nn.Linear(n_heads * proj_dim, input_dim)
 
@@ -28,14 +28,13 @@ class TriangleAttentionBase(nn.Module):
         raise NotImplementedError()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [N_RES, N_RES, N_FEATS]
         qkv_shape = (*x.shape[:2], self.proj_dim, self.n_heads)
 
         # Project inputs
         x = self.layer_norm(x)
         qkv = self.to_qkv(x).chunk(3, dim=-1)
         q, k, v = map(lambda u: u.view(qkv_shape), qkv)
-        b = self.to_b(x).view(qkv_shape)
+        b = self.to_b(x)
         g = self.to_g(x).view(qkv_shape)
 
         # Compute attention
@@ -56,11 +55,11 @@ class TriangleAttentionStartingNode(TriangleAttentionBase):
     ) -> torch.Tensor:
         ## a_ijk := softmax_k( 1/sqrt(c) * q_ij^T k_ik + b_jk )
         a = F.softmax(
-            self.inv_sqrt_dim * torch.einsum("ijdh,ikdh->ijkdh", q, k) + b.unsqueeze(0),
+            self.inv_sqrt_dim * torch.einsum("ijdh,ikdh->ijkh", q, k) + b.unsqueeze(0),
             dim=2,
         )
         ## o_ij := g_ij \odot \sum_k a_ijk * v_ik
-        out = g * torch.einsum("ijkdh,ikdh->ijdh", a, v)
+        out = g * torch.einsum("ijkh,ikdh->ijdh", a, v)
         return out
 
 
@@ -75,12 +74,12 @@ class TriangleAttentionEndingNode(TriangleAttentionBase):
     ) -> torch.Tensor:
         ## a_ijk := softmax_k( 1/sqrt(c) * q_ij^T k_kj + b_ki )
         a = F.softmax(
-            self.inv_sqrt_dim * torch.einsum("ijdh,kjdh->ijkdh", q, k)
-            + torch.einsum("iokdh->koidh", b.unsqueeze(1)),
+            self.inv_sqrt_dim * torch.einsum("ijdh,kjdh->ijkh", q, k)
+            + torch.einsum("iokh->koih", b.unsqueeze(1)),
             dim=2,
         )
         ## o_ij := g_ij \odot \sum_k{ a_ijk * v_kj }
-        out = g * torch.einsum("ijkdh,kjdh->ijdh", a, v)
+        out = g * torch.einsum("ijkh,kjdh->ijdh", a, v)
         return out
 
 

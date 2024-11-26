@@ -59,14 +59,14 @@ class MSARowAttentionWithPairBias(nn.Module):
 
         qkv = self.to_qkv(msa_rep).chunk(3, dim=-1)
         q, k, v = map(lambda x: x.view(qkv_shape), qkv)
-        b = self.to_b(pair_rep).unsqueeze(-2).unsqueeze(0)
+        b = self.to_b(pair_rep).unsqueeze(0)
         g = self.to_g(msa_rep).view(qkv_shape)
 
         a = F.softmax(
-            self.inv_sqrt_dim * torch.einsum("sidh,sjdh->sijdh", q, k) + b, dim=2
+            self.inv_sqrt_dim * torch.einsum("sidh,sjdh->sijh", q, k) + b, dim=2
         )
 
-        out = g * torch.einsum("sijdh,sjdh->sidh", a, v)
+        out = g * torch.einsum("sijh,sjdh->sidh", a, v)
         out = self.out_proj(out.flatten(-2, -1))
 
         return out
@@ -93,10 +93,10 @@ class MSAColumnAttention(nn.Module):
         q, k, v = map(lambda x: x.view(qkv_shape), qkv)
         g = self.to_g(msa_rep).view(qkv_shape)
 
-        a = F.softmax(self.inv_sqrt_dim * torch.einsum("sidh,tidh->stidh", q, k), dim=1)
+        a = F.softmax(self.inv_sqrt_dim * torch.einsum("sidh,tidh->stih", q, k), dim=1)
 
         # Typo in paper? should be a^h_{sti} v^h_{ti} instead of a^h_{sti} v^h_{st}
-        out = g * torch.einsum("stidh,tidh->sidh", a, v)
+        out = g * torch.einsum("stih,tidh->sidh", a, v)
         out = self.out_proj(out.flatten(-2, -1))
 
         return out
