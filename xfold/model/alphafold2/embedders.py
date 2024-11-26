@@ -87,13 +87,10 @@ class RecyclingEmbedder(nn.Module):
 
     def forward(
         self,
-        msa_rep: torch.Tensor,
+        target_msa_rep: torch.Tensor,
         pair_rep: torch.Tensor,
         prev_struct_cb: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        TARGET_SEQ_INDEX = 0
-        target_msa_rep = msa_rep[TARGET_SEQ_INDEX]
-
         # Embed CB atom distance information
         cb_dists = torch.cdist(prev_struct_cb, prev_struct_cb, p=2)
         pair_rep_cb = self.cb_proj(self.cb_bin(cb_dists))
@@ -103,9 +100,9 @@ class RecyclingEmbedder(nn.Module):
         target_msa_update = self.layer_norm_msa(target_msa_rep)
 
         pair_rep = pair_rep + pair_update
-        msa_rep[TARGET_SEQ_INDEX] = msa_rep[TARGET_SEQ_INDEX] + target_msa_update
+        target_msa_rep = target_msa_rep + target_msa_update
 
-        return msa_rep, pair_rep
+        return target_msa_rep, pair_rep
 
 
 class TemplatePairBlock(nn.Module):
@@ -183,9 +180,7 @@ class TemplatePointwiseAttention(nn.Module):
         kv = self.to_kv(temp_rep).chunk(2, dim=-1)
         k, v = map(lambda u: u.view(temp_proj_shape), kv)
 
-        a = F.softmax(
-            self.inv_sqrt_dim * torch.einsum("ijdh,sijdh->sijh", q, k), dim=0
-        )
+        a = F.softmax(self.inv_sqrt_dim * torch.einsum("ijdh,sijdh->sijh", q, k), dim=0)
         out = torch.einsum("sijh,sijdh->ijdh", a, v)
         pair_update = self.out_proj(out.flatten(-2, -1))
 

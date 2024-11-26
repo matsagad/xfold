@@ -8,7 +8,7 @@ from xfold.model.alphafold2.embedders import (
     ExtraMSAEmbedder,
 )
 from xfold.model.alphafold2.evoformer import EvoformerStack
-from xfold.protein.sequence import MSA
+from xfold.protein.sequence import MSA, Sequence
 from xfold.protein.structure import ProteinStructure, TemplateProtein
 
 
@@ -89,6 +89,9 @@ class AlphaFold2(nn.Module):
         n_evoformer_blocks: int = 48,
     ):
         super().__init__()
+        self.msa_dim = msa_dim
+        self.pair_dim = pair_dim
+
         self.n_cycling_iters = n_recycling_iters
         self.n_ensembles = n_ensembles
         self.max_n_msa_seqs = max_n_msa_seqs
@@ -140,17 +143,18 @@ class AlphaFold2(nn.Module):
 
     def forward(
         self,
-        target: ProteinStructure,
+        target: Sequence,
         msa: MSA,
         extra_msa: MSA,
         templates: List[TemplateProtein],
+        target_struct: ProteinStructure = None,
     ) -> ProteinStructure:
-        TARGET_SEQ_INDEX = 0
+        N_RES = target.length()
+
         n_ensembles = 1 if self.training else self.n_ensembles
 
-        residue_index = target.seq.seq_index
-        target_feat = target.seq.seq_one_hot
-        N_res, N_coords = target.seq.length(), 3
+        residue_index = target.seq_index
+        target_feat = target.seq_one_hot
 
         temp_angle_feats = torch.stack(
             [temp.template_angle_feat for temp in templates], dim=0
@@ -159,9 +163,9 @@ class AlphaFold2(nn.Module):
             [temp.template_pair_feat for temp in templates], dim=0
         )
 
-        prev_avg_target_msa_rep = 0
-        prev_avg_pair_rep = 0
-        prev_avg_struct_cb = torch.zeros((N_res, N_coords))
+        prev_avg_target_msa_rep = torch.zeros((self.msa_dim,))
+        prev_avg_pair_rep = torch.zeros((N_RES, N_RES, self.pair_dim))
+        prev_avg_struct_cb = torch.zeros((N_RES, 3))
         for _ in range(self.n_cycling_iters):
             avg_target_msa_rep = 0
             avg_pair_rep = 0
@@ -178,8 +182,8 @@ class AlphaFold2(nn.Module):
                     target_feat, residue_index, msa_feat_cn
                 )
                 # Recycling embedder
-                msa_rep, pair_rep = self.recycling_embedder(
-                    msa_rep, pair_rep, prev_avg_struct_cb
+                target_msa_rep, pair_rep = self.recycling_embedder(
+                    prev_avg_target_msa_rep, prev_avg_pair_rep, prev_avg_struct_cb
                 )
                 # Templates embedder
                 msa_rep, pair_rep = self.template_embedder(
@@ -190,7 +194,6 @@ class AlphaFold2(nn.Module):
 
                 # Evoformer stack
                 msa_rep, pair_rep, single_rep = self.evoformer_stack(msa_rep, pair_rep)
-                target_msa_rep = msa_rep[TARGET_SEQ_INDEX]
 
                 avg_target_msa_rep = avg_target_msa_rep + target_msa_rep
                 avg_pair_rep = avg_pair_rep + pair_rep
