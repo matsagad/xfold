@@ -61,14 +61,14 @@ class InputEmbedder(nn.Module):
     def forward(
         self,
         target_feat: torch.Tensor,
-        residue_idx: torch.Tensor,
+        res_index: torch.Tensor,
         msa_feat: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Embed target sequence and relative residue positions
         pair1 = self.pair_proj1(target_feat)
         pair2 = self.pair_proj2(target_feat)
         pair_rep = pair1.unsqueeze(1) + pair2.unsqueeze(0)
-        pair_rep = pair_rep + self.relpos(residue_idx)
+        pair_rep = pair_rep + self.relpos(res_index)
 
         # Embed MSA and target sequence
         msa_rep = self.msa_proj(msa_feat) + self.target_proj(target_feat)

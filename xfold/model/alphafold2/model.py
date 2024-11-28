@@ -8,6 +8,7 @@ from xfold.model.alphafold2.embedders import (
     ExtraMSAEmbedder,
 )
 from xfold.model.alphafold2.evoformer import EvoformerStack
+from xfold.model.common.structure import StructureModule
 from xfold.protein.sequence import MSA, Sequence
 from xfold.protein.structure import ProteinStructure, TemplateProtein
 
@@ -56,6 +57,14 @@ class AlphaFold2Config:
     msa_col_attn_dim: int = 32
     n_evoformer_blocks: int = 48
 
+    # Structure module
+    struct_proj_dim: int = 128
+    ipa_dim: int = 16
+    n_ipa_heads: int = 12
+    n_ipa_query_points: int = 4
+    n_ipa_point_values: int = 8
+    n_struct_module_layers: int = 8
+
 
 class AlphaFold2(nn.Module):
     def __init__(
@@ -87,6 +96,12 @@ class AlphaFold2(nn.Module):
         msa_row_attn_dim: int = 32,
         msa_col_attn_dim: int = 32,
         n_evoformer_blocks: int = 48,
+        struct_proj_dim: int = 128,
+        ipa_dim: int = 16,
+        n_ipa_heads: int = 12,
+        n_ipa_query_points: int = 4,
+        n_ipa_point_values: int = 8,
+        n_struct_module_layers: int = 8,
     ):
         super().__init__()
         self.msa_dim = msa_dim
@@ -141,6 +156,18 @@ class AlphaFold2(nn.Module):
             n_evoformer_blocks,
         )
 
+        # Structure module
+        self.structure_module = StructureModule(
+            single_dim,
+            pair_dim,
+            struct_proj_dim,
+            ipa_dim,
+            n_ipa_heads,
+            n_ipa_query_points,
+            n_ipa_point_values,
+            n_struct_module_layers,
+        )
+
     def forward(
         self,
         target: Sequence,
@@ -153,7 +180,7 @@ class AlphaFold2(nn.Module):
 
         n_ensembles = 1 if self.training else self.n_ensembles
 
-        residue_index = target.seq_index
+        res_index = target.seq_index
         target_feat = target.seq_one_hot
 
         temp_angle_feats = torch.stack(
@@ -179,7 +206,7 @@ class AlphaFold2(nn.Module):
 
                 # Input embedder
                 msa_rep, pair_rep = self.input_embedder(
-                    target_feat, residue_index, msa_feat_cn
+                    target_feat, res_index, msa_feat_cn
                 )
                 # Recycling embedder
                 target_msa_rep, pair_rep = self.recycling_embedder(
@@ -204,3 +231,12 @@ class AlphaFold2(nn.Module):
             avg_single_rep = avg_single_rep / n_ensembles
 
             # Structure module
+            pred_struct, plddt, *losses = self.structure_module(
+                avg_single_rep, avg_pair_rep, res_index, target_struct
+            )
+
+            prev_avg_target_msa_rep = avg_target_msa_rep
+            prev_avg_pair_rep = avg_pair_rep
+            prev_avg_struct_cb = pred_struct.get_beta_carbon_coords()
+
+        return pred_struct, plddt, losses
