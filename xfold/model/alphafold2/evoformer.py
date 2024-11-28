@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
-from xfold.model.common.utils import (
+from xfold.model.common.misc import (
     DropoutColumnwise,
     DropoutRowwise,
     LinearNoBias,

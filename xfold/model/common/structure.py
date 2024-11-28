@@ -10,7 +10,7 @@ from xfold.protein.constants import (
     AA_TORSION_NAMES,
 )
 from xfold.protein.structure import ProteinFrames, ProteinStructure
-from xfold.model.common.utils import LinearNoBias
+from xfold.model.common.misc import LinearNoBias
 
 
 class InvariantPointAttention(nn.Module):

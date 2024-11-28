@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from xfold.model.common.utils import LinearNoBias, LinearSigmoid
+from xfold.model.common.misc import LinearNoBias, LinearSigmoid
 
 
 class TriangleAttentionBase(nn.Module):
