@@ -1,0 +1,11 @@
+defaults:
+  - _self_
+  - model: "alphafold2"
+  - experiment: "predict"
+
+model:
+  name: ???
+  device: "cpu"
+
+experiment:
+  name: ???

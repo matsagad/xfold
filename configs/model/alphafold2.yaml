@@ -1,0 +1,3 @@
+name: alphafold2
+
+device: "cpu"

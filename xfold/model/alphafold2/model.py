@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
-from typing import List
+from typing import List, Tuple, Union
+from xfold.configs.alphafold2 import AlphaFold2Config
+from xfold.model import register_folding_model
 from xfold.model.alphafold2.embedders import (
     InputEmbedder,
     RecyclingEmbedder,
@@ -13,59 +15,7 @@ from xfold.protein.sequence import MSA, Sequence
 from xfold.protein.structure import ProteinStructure, TemplateProtein
 
 
-class AlphaFold2Config:
-    # Inference
-    n_recycling_iters: int = 3
-    n_ensembles: int = 1
-
-    # MSA bootstrapping
-    max_n_msa_seqs: int = 512
-    max_n_extra_msa_seqs: int = 1024
-
-    # Embedding
-    msa_dim: int = 256
-    pair_dim: int = 128
-
-    ## Input embedding
-    max_relpos_dist: int = 32
-
-    ## Recycling embedding
-    min_cb_dist: float = 3.375
-    max_cb_dist: float = 21.375
-    n_cb_bins: int = 15
-
-    ## Template embedding
-    temp_dim: int = 64
-    n_tri_attn_heads: int = 4
-    n_pw_attn_heads: int = 4
-    n_temp_pair_blocks: int = 2
-    temp_pair_trans_dim_scale: int = 2
-
-    ## Extra MSA embedding
-    extra_msa_dim: int = 64
-    extra_msa_row_attn_dim: int = 8
-    extra_msa_col_global_attn_dim: int = 8
-    outer_prod_msa_dim: int = 32
-    n_msa_attn_heads: int = 8
-    n_extra_msa_blocks: int = 4
-    msa_trans_dim_scale: int = 4
-    pair_trans_dim_scale: int = 4
-
-    # Evoformer (mostly shared with extra MSA)
-    single_dim: int = 384
-    msa_row_attn_dim: int = 32
-    msa_col_attn_dim: int = 32
-    n_evoformer_blocks: int = 48
-
-    # Structure module
-    struct_proj_dim: int = 128
-    ipa_dim: int = 16
-    n_ipa_heads: int = 12
-    n_ipa_query_points: int = 4
-    n_ipa_point_values: int = 8
-    n_struct_module_layers: int = 8
-
-
+@register_folding_model("alphafold2", AlphaFold2Config)
 class AlphaFold2(nn.Module):
     def __init__(
         self,
@@ -102,10 +52,13 @@ class AlphaFold2(nn.Module):
         n_ipa_query_points: int = 4,
         n_ipa_point_values: int = 8,
         n_struct_module_layers: int = 8,
+        device: str = "cpu",
     ):
         super().__init__()
         self.msa_dim = msa_dim
         self.pair_dim = pair_dim
+
+        self.device = device
 
         self.n_cycling_iters = n_recycling_iters
         self.n_ensembles = n_ensembles
@@ -168,6 +121,18 @@ class AlphaFold2(nn.Module):
             n_struct_module_layers,
         )
 
+    def predict(self, seq: str) -> Tuple[ProteinStructure, float]:
+        seq = Sequence(seq)
+
+        # Retrieve MSA from external database and pre-process/cluster
+        msa = MSA([])
+        extra_msa = MSA([], is_extra=True)
+
+        # Retrieve template proteins
+        templates = []
+
+        return self.forward(seq, msa, extra_msa, templates)
+
     def forward(
         self,
         target: Sequence,
@@ -175,7 +140,9 @@ class AlphaFold2(nn.Module):
         extra_msa: MSA,
         templates: List[TemplateProtein],
         target_struct: ProteinStructure = None,
-    ) -> ProteinStructure:
+    ) -> Union[
+        Tuple[ProteinStructure, float], Tuple[ProteinStructure, float, List[float]]
+    ]:
         N_RES = target.length()
 
         n_ensembles = 1 if self.training else self.n_ensembles
