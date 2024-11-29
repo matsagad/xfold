@@ -10,4 +10,4 @@ class BaseModelConfig:
     @classmethod
     def from_dict(cls, kwargs: Dict[str, Any]) -> "BaseModelConfig":
         expected_params = inspect.signature(cls).parameters
-        return cls(**{k: v for k, v in kwargs.items() if k in expected_params})
+        return cls(**{k: kwargs[k] for k in expected_params if k in kwargs})

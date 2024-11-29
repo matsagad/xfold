@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import List, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 from xfold.configs.alphafold2 import AlphaFold2Config
 from xfold.model import register_folding_model
 from xfold.model.alphafold2.embedders import (
@@ -121,24 +121,26 @@ class AlphaFold2(nn.Module):
             n_struct_module_layers,
         )
 
-    def predict(self, seq: str) -> Tuple[ProteinStructure, float]:
+    def predict(self, seq: str) -> Tuple[ProteinStructure, Dict[str, Any]]:
         seq = Sequence(seq)
 
         # Retrieve MSA from external database and pre-process/cluster
-        msa = MSA([])
-        extra_msa = MSA([], is_extra=True)
+        msa = MSA([seq.seq_str, seq.seq_str])
+        extra_msa = None
 
         # Retrieve template proteins
         templates = []
 
-        return self.forward(seq, msa, extra_msa, templates)
+        struct, plddt, *_ = self.forward(seq, msa, extra_msa, templates)
+        aux_preds = {"plddt": plddt}
+        return struct, aux_preds
 
     def forward(
         self,
         target: Sequence,
         msa: MSA,
-        extra_msa: MSA,
-        templates: List[TemplateProtein],
+        extra_msa: MSA = None,
+        templates: List[TemplateProtein] = [],
         target_struct: ProteinStructure = None,
     ) -> Union[
         Tuple[ProteinStructure, float], Tuple[ProteinStructure, float, List[float]]
@@ -150,12 +152,16 @@ class AlphaFold2(nn.Module):
         res_index = target.seq_index
         target_feat = target.seq_one_hot
 
-        temp_angle_feats = torch.stack(
-            [temp.template_angle_feat for temp in templates], dim=0
-        )
-        temp_pair_feats = torch.stack(
-            [temp.template_pair_feat for temp in templates], dim=0
-        )
+        use_templates = len(templates) > 0
+        use_extra_msa = extra_msa is not None
+
+        if use_templates:
+            temp_angle_feats = torch.stack(
+                [temp.template_angle_feat for temp in templates], dim=0
+            )
+            temp_pair_feats = torch.stack(
+                [temp.template_pair_feat for temp in templates], dim=0
+            )
 
         prev_avg_target_msa_rep = torch.zeros((self.msa_dim,))
         prev_avg_pair_rep = torch.zeros((N_RES, N_RES, self.pair_dim))
@@ -166,10 +172,7 @@ class AlphaFold2(nn.Module):
             avg_single_rep = 0
             for _ in range(n_ensembles):
                 msa_cn = msa.sample_msa(self.max_n_msa_seqs)
-                extra_msa_cn = extra_msa.sample_msa(self.max_n_extra_msa_seqs)
-
                 msa_feat_cn = msa_cn.msa_feat
-                extra_msa_feat_cn = extra_msa_cn.msa_feat
 
                 # Input embedder
                 msa_rep, pair_rep = self.input_embedder(
@@ -180,11 +183,15 @@ class AlphaFold2(nn.Module):
                     prev_avg_target_msa_rep, prev_avg_pair_rep, prev_avg_struct_cb
                 )
                 # Templates embedder
-                msa_rep, pair_rep = self.template_embedder(
-                    msa_rep, pair_rep, temp_angle_feats, temp_pair_feats
-                )
+                if use_templates:
+                    msa_rep, pair_rep = self.template_embedder(
+                        msa_rep, pair_rep, temp_angle_feats, temp_pair_feats
+                    )
                 # Extra MSAs embedder
-                pair_rep = self.extra_msa_embedder(extra_msa_feat_cn, pair_rep)
+                if use_extra_msa:
+                    extra_msa_cn = extra_msa.sample_msa(self.max_n_extra_msa_seqs)
+                    extra_msa_feat_cn = extra_msa_cn.msa_feat
+                    pair_rep = self.extra_msa_embedder(extra_msa_feat_cn, pair_rep)
 
                 # Evoformer stack
                 msa_rep, pair_rep, single_rep = self.evoformer_stack(msa_rep, pair_rep)

@@ -1,3 +1,4 @@
 name: "predict"
 
 seq: ???
+seed: null

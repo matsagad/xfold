@@ -96,7 +96,7 @@ class ProteinStructure:
                     biotite.structure.Atom(
                         coord=coords[res_id - 1],
                         chain_id="A",
-                        res_id=res_id,
+                        res_id=res_id.item(),
                         res_name=AminoAcidVocab.get_three_letter_code(
                             self.seq.seq_str[res_id - 1]
                         ),
@@ -190,6 +190,11 @@ class ProteinStructure:
                 atom_masks[atom_type][i_seq] = atom14_mask[i_seq, i_atom].float()
         return ProteinStructure(seq, atom_coords, atom_masks)
 
+    def save_as_pdb(self, f_out: str) -> None:
+        f_pdb = pdb.PDBFile()
+        arr = self._to_biotite_atom_array()
+        pdb.set_structure(f_pdb, arr)
+        f_pdb.write(f_out)
 
 class ProteinFrames:
     def __init__(
