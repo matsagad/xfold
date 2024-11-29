@@ -48,9 +48,11 @@ class AlphaFold2(nn.Module):
         n_evoformer_blocks: int = 48,
         struct_proj_dim: int = 128,
         ipa_dim: int = 16,
+        plddt_head_dim: int = 128,
         n_ipa_heads: int = 12,
         n_ipa_query_points: int = 4,
         n_ipa_point_values: int = 8,
+        n_plddt_bins: int = 50,
         n_struct_module_layers: int = 8,
         device: str = "cpu",
     ):
@@ -110,14 +112,17 @@ class AlphaFold2(nn.Module):
         )
 
         # Structure module
+        plddt_bins = torch.linspace(1, 99, n_plddt_bins)
         self.structure_module = StructureModule(
             single_dim,
             pair_dim,
             struct_proj_dim,
             ipa_dim,
+            plddt_head_dim,
             n_ipa_heads,
             n_ipa_query_points,
             n_ipa_point_values,
+            plddt_bins,
             n_struct_module_layers,
         )
 

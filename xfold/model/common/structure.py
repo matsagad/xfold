@@ -10,6 +10,7 @@ from xfold.protein.constants import (
     AA_TORSION_NAMES,
 )
 from xfold.protein.structure import ProteinFrames, ProteinStructure
+from xfold.model.common.aux_heads import PLDDTHead
 from xfold.model.common.misc import LinearNoBias
 
 
@@ -281,6 +282,37 @@ def compute_all_atom_coords(
     return frames_all_atom, struct
 
 
+LDDT_INCLUSION_RADIUS = 15.0
+LDDT_THRESHOLDS = torch.tensor([0.5, 1.0, 2.0, 4.0])
+
+
+def compute_per_residue_lddt_ca(
+    pred_struct: ProteinStructure,
+    true_struct: ProteinStructure,
+    inclusion_radius: float = LDDT_INCLUSION_RADIUS,
+    thresholds: torch.Tensor = LDDT_THRESHOLDS,
+) -> torch.Tensor:
+    pred_ca = pred_struct.atom_coords["CA"]
+    true_ca = true_struct.atom_coords["CA"]
+
+    n_res = len(pred_ca)
+
+    pred_ca_dists = torch.cdist(pred_ca, pred_ca, p=2)
+    true_ca_dists = torch.cdist(true_ca, true_ca, p=2)
+
+    inclusion_mask = true_ca_dists < inclusion_radius
+    inclusion_mask[range(n_res), range(n_res)] = False
+
+    abs_diff = torch.abs(pred_ca_dists - true_ca_dists)
+    n_tolerances_met = (abs_diff.unsqueeze(-1) <= thresholds.view(1, 1, -1)).sum(dim=-1)
+    n_tolerances_met[~inclusion_mask] = 0
+    per_residue_lddt = n_tolerances_met.sum(dim=-1) / (
+        len(thresholds) * inclusion_mask.sum(dim=1)
+    )
+
+    return per_residue_lddt
+
+
 class StructureModule(nn.Module):
     def __init__(
         self,
@@ -288,9 +320,11 @@ class StructureModule(nn.Module):
         pair_dim: int,
         proj_dim: int,
         ipa_dim: int,
+        plddt_head_dim: int,
         n_ipa_heads: int,
         n_ipa_query_points: int,
         n_ipa_point_values: int,
+        plddt_bins: torch.Tensor,
         n_layers: int,
     ) -> None:
         super().__init__()
@@ -327,6 +361,8 @@ class StructureModule(nn.Module):
 
         self.to_pred_angles = AngleResNet(single_dim, proj_dim)
 
+        self.plddt_head = PLDDTHead(single_dim, plddt_head_dim, plddt_bins)
+
     def forward(
         self,
         single_rep: torch.Tensor,
@@ -339,6 +375,7 @@ class StructureModule(nn.Module):
     ]:
         N_RES = len(single_rep)
 
+        print(target_struct)
         compute_losses = target_struct is not None
 
         single_rep_initial = self.layer_norm_single1(single_rep)
@@ -391,15 +428,16 @@ class StructureModule(nn.Module):
         frames_per_group, pred_struct = compute_all_atom_coords(
             frames, pred_angles, res_index
         )
-        plddt = torch.zeros((N_RES,))
+        if not compute_losses:
+            plddt = self.plddt_head(single_rep)
+            return pred_struct, plddt
 
-        if compute_losses:
-            L_aux = L_aux / self.n_layers
+        L_aux = L_aux / self.n_layers
 
-            # TODO: compute all-atom FAPE loss
-            L_fape = 0
-            L_conf = 0
+        # TODO: compute all-atom FAPE loss
+        L_fape = 0
 
-            return pred_struct, plddt, L_fape, L_conf, L_aux
+        true_lddt = compute_per_residue_lddt_ca(pred_struct, target_struct)
+        plddt, L_conf = self.plddt_head(single_rep, true_lddt)
 
-        return pred_struct, plddt
+        return pred_struct, plddt, L_fape, L_conf, L_aux

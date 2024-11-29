@@ -50,7 +50,9 @@ class AlphaFold2Config(BaseModelConfig):
     # Structure module
     struct_proj_dim: int = 128
     ipa_dim: int = 16
+    plddt_head_dim: int = 128
     n_ipa_heads: int = 12
     n_ipa_query_points: int = 4
     n_ipa_point_values: int = 8
+    n_plddt_bins: int = 50
     n_struct_module_layers: int = 8

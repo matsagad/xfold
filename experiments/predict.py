@@ -45,8 +45,17 @@ def main(cfg: DictConfig) -> None:
         struct, aux_preds = model.predict(cfg.experiment.seq)
 
     out = out_dir()
-    f_out = os.path.join(out, f"pred_struct__{exp_cfg.seq}.pdb")
+
+    # Save predicted structure
+    f_out = os.path.join(out, "pred_struct.pdb")
     struct.save_as_pdb(f_out)
+
+    # Save auxiliary confidence predictions
+    score_dir = os.path.join(out, "scores")
+    os.makedirs(score_dir)
+    for pred_name, pred_score in aux_preds.items():
+        f_out = os.path.join(score_dir, f"{pred_name}.pt")
+        torch.save(pred_score.detach().cpu(), f_out)
 
 
 def set_seed(seed: int) -> None:
