@@ -171,7 +171,16 @@ class ProteinStructure:
         alt_torsion_angles = torch.cat([bb_torsion_angles, alt_chi_angles], dim=1)
         torsion_angle_masks = torch.cat([bb_angle_masks, chi_angle_masks], dim=1)
 
-        return torsion_angles, alt_torsion_angles, torsion_angle_masks
+        torsion_angles_sin_cos = torch.stack(
+            [torch.sin(torsion_angles), torch.cos(torsion_angles)],
+            dim=2,
+        )
+        alt_torsion_angles_sin_cos = torch.stack(
+            [torch.sin(alt_torsion_angles), torch.cos(alt_torsion_angles)],
+            dim=2,
+        )
+
+        return torsion_angles_sin_cos, alt_torsion_angles_sin_cos, torsion_angle_masks
 
     def from_atom14(
         res_index: torch.Tensor, atom14_coords: torch.Tensor, atom14_mask: torch.Tensor
@@ -190,11 +199,25 @@ class ProteinStructure:
                 atom_masks[atom_type][i_seq] = atom14_mask[i_seq, i_atom].float()
         return ProteinStructure(seq, atom_coords, atom_masks)
 
+    def to_atom14(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        N_RES = self.seq.length()
+        atom14_coords = torch.zeros((N_RES, 14, 3))
+        atom14_mask = torch.zeros((N_RES, 14))
+
+        for i_seq, aa in enumerate(self.seq.seq_str):
+            aa3 = AminoAcidVocab.get_three_letter_code(aa)
+            for i_atom, atom_type in enumerate(HEAVY_ATOMS_BY_AA[aa3]):
+                atom14_coords[i_seq, i_atom] = self.atom_coords[atom_type][i_seq]
+                atom14_mask[i_seq, i_atom] = self.atom_masks[atom_type][i_seq]
+
+        return atom14_coords, atom14_mask
+
     def save_as_pdb(self, f_out: str) -> None:
         f_pdb = pdb.PDBFile()
         arr = self._to_biotite_atom_array()
         pdb.set_structure(f_pdb, arr)
         f_pdb.write(f_out)
+
 
 class ProteinFrames:
     def __init__(
@@ -270,13 +293,11 @@ class ProteinFrames:
 
     def apply_along_dim(self, x: torch.Tensor, dim: int) -> torch.Tensor:
         assert x.shape[-1] == 3
-        altered_shape = x.movedim(dim, 0).shape
+        _x = x.movedim(dim, 0)
+        altered_shape = (len(self.Rs), *_x.shape[1:])
         out = (
             (
-                (
-                    x.movedim(dim, 0).reshape(len(self.Rs), -1, 3)
-                    @ self.Rs.transpose(-1, -2)
-                )
+                (_x.reshape(x.shape[dim], -1, 3) @ self.Rs.transpose(-1, -2))
                 + self.ts.unsqueeze(1)
             )
             .view(altered_shape)
@@ -286,12 +307,10 @@ class ProteinFrames:
 
     def apply_inverse_along_dim(self, x: torch.Tensor, dim: int) -> torch.Tensor:
         assert x.shape[-1] == 3
-        altered_shape = x.movedim(dim, 0).shape
+        _x = x.movedim(dim, 0)
+        altered_shape = (len(self.Rs), *_x.shape[1:])
         out = (
-            (
-                (x.movedim(dim, 0).reshape(len(self.Rs), -1, 3) - self.ts.unsqueeze(1))
-                @ self.Rs
-            )
+            ((_x.reshape(x.shape[dim], -1, 3) - self.ts.unsqueeze(1)) @ self.Rs)
             .view(altered_shape)
             .movedim(0, dim)
         )
@@ -373,7 +392,7 @@ class TemplateProtein:
                 aatype_one_hot1,        # (N_res, N_res, 22)
                 aatype_one_hot2,        # (N_res, N_res, 22)
                 pseudo_beta_pair_mask,  # (N_res, N_res,  1)
-                bb_pair_mask,     # (N_res, N_res,  1)
+                bb_pair_mask,           # (N_res, N_res,  1)
             ],
             dim=-1,
         )
@@ -389,17 +408,11 @@ class TemplateProtein:
         aatype_one_hot = structure.msa_seq[:, :-1]
 
         # Torsion angles: 3 x backbone and 4 x side chain angles in sine and cosine
-        torsion_angles, alt_torsion_angles, torsion_angle_masks = (
+        torsion_angles_sin_cos, alt_torsion_angles_sin_cos, torsion_angle_masks = (
             structure.get_torsion_angles()
         )
-        torsion_angles_sin_cos = torch.stack(
-            [torch.sin(torsion_angles), torch.cos(torsion_angles)],
-            dim=2,
-        ).flatten(-2, -1)
-        alt_torsion_angles_sin_cos = torch.stack(
-            [torch.sin(alt_torsion_angles), torch.cos(alt_torsion_angles)],
-            dim=2,
-        ).flatten(-2, -1)
+        torsion_angles_sin_cos = torsion_angles_sin_cos.flatten(-2, -1)
+        alt_torsion_angles_sin_cos = alt_torsion_angles_sin_cos.flatten(-2, -1)
 
         # fmt: off
         temp_angle_feat = torch.cat(

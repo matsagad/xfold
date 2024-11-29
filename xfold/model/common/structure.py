@@ -3,10 +3,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Tuple, Union
 from xfold.protein.constants import (
+    AA_AMBIG_ATOMS_MASK,
+    AA_AMBIG_ATOMS_PERMUTE,
     AA_ATOM14_MASK,
     AA_ATOM14_TO_RIGID_GROUP,
     AA_LIT_ATOM14_POS_4x1,
     AA_LIT_RIGID_TO_RIGID,
+    AA_ATOM_TYPE_TO_RIGID_GROUP,
     AA_TORSION_NAMES,
 )
 from xfold.protein.structure import ProteinFrames, ProteinStructure
@@ -174,22 +177,58 @@ class AngleResNet(nn.Module):
 
 def frame_aligned_point_error(
     frames: ProteinFrames,
-    ca_coords: torch.Tensor,
+    coords: torch.Tensor,
     true_frames: ProteinFrames,
-    true_ca_coords: torch.Tensor,
+    true_coords: torch.Tensor,
+    mask: torch.Tensor,
     length_scale: float = 10,
     d_clamp: float = 10,
     epsilon: float = 1e-4,
 ) -> torch.Tensor:
-    aligned = frames.apply_inverse_along_dim(ca_coords.unsqueeze(0), dim=0)
-    true_aligned = true_frames.apply_inverse_along_dim(
-        true_ca_coords.unsqueeze(0), dim=0
-    )
+    aligned = frames.apply_inverse_along_dim(coords.unsqueeze(0), dim=0)
+    aligned = aligned[mask == 1][:, mask == 1]
+    true_aligned = true_frames.apply_inverse_along_dim(true_coords.unsqueeze(0), dim=0)
+    true_aligned = true_aligned[mask == 1][:, mask == 1]
     d = torch.sqrt((aligned - true_aligned) ** 2 + epsilon)
 
     fape = 1 / length_scale * torch.clamp(d, max=d_clamp).mean()
 
     return fape
+
+
+def frame_aligned_point_error_all_atom(
+    frames_list: List[ProteinFrames],
+    struct: ProteinStructure,
+    true_frames_list: List[ProteinFrames],
+    true_struct: ProteinStructure,
+    length_scale: float = 10,
+    d_clamp: float = 10,
+    epsilon: float = 1e-4,
+) -> torch.Tensor:
+
+    fape = 0
+    n_atoms = 0
+
+    for atom_type, atom_coords in struct.atom_coords.items():
+        atom_mask = struct.atom_masks[atom_type]
+        if (atom_mask == 0).all():
+            continue
+        rigid_group_no = AA_ATOM_TYPE_TO_RIGID_GROUP[atom_type]
+        true_atom_coords = true_struct.atom_coords[atom_type]
+
+        fape = fape + frame_aligned_point_error(
+            frames_list[rigid_group_no],
+            atom_coords,
+            true_frames_list[rigid_group_no],
+            true_atom_coords,
+            atom_mask,
+            length_scale,
+            d_clamp,
+            epsilon,
+        )
+        n_atoms += 1
+
+    return fape / n_atoms
 
 
 def torsion_angle_loss(
@@ -313,6 +352,55 @@ def compute_per_residue_lddt_ca(
     return per_residue_lddt
 
 
+def rename_symmetric_ground_truth_atoms(
+    pred_struct: ProteinStructure,
+    true_struct: ProteinStructure,
+    res_index: torch.Tensor,
+) -> ProteinStructure:
+    pred_atom14_coords, atom14_mask = pred_struct.to_atom14()
+    true_atom14_coords, _ = true_struct.to_atom14()
+
+    # Swap atoms that are ambiguous
+    alt_true_atom14_coords = torch.gather(
+        true_atom14_coords,
+        1,
+        AA_AMBIG_ATOMS_PERMUTE[res_index]
+        .unsqueeze(-1)
+        .expand(true_atom14_coords.shape),
+    )
+
+    # Compute pairwise distances from all residues to all non-ambiguous residues
+    d = torch.cdist(
+        pred_atom14_coords.unsqueeze(1), pred_atom14_coords.unsqueeze(0), p=2
+    )
+    d_true = torch.cdist(
+        true_atom14_coords.unsqueeze(1), true_atom14_coords.unsqueeze(0), p=2
+    )
+    d_alt_true = torch.cdist(
+        alt_true_atom14_coords.unsqueeze(1), true_atom14_coords.unsqueeze(0), p=2
+    )
+
+    ## Zero out entries that are not supposed to be computed
+    i_has_no_atom = atom14_mask.unsqueeze(1).unsqueeze(3).expand(d.shape) == 0
+    j_is_ambig = (
+        AA_AMBIG_ATOMS_MASK[res_index].unsqueeze(0).unsqueeze(2).expand(d.shape) == 1
+    )
+    j_has_no_atom = atom14_mask.unsqueeze(0).unsqueeze(2).expand(d.shape) == 0
+    entry_to_zero = i_has_no_atom | j_is_ambig | j_has_no_atom
+
+    diff_alt_true = torch.abs(d - d_alt_true)
+    diff_alt_true[entry_to_zero] = 0
+    diff_true = torch.abs(d - d_true)
+    diff_true[entry_to_zero] = 0
+
+    ## Swap ambiguous atoms if 1DDT is smaller when swapped
+    indices_to_swap = diff_alt_true.sum(dim=(1, 2, 3)) < diff_true.sum(dim=(1, 2, 3))
+
+    true_atom14_coords[indices_to_swap] = alt_true_atom14_coords[indices_to_swap]
+
+    return ProteinStructure.from_atom14(res_index, true_atom14_coords, atom14_mask)
+
+
 class StructureModule(nn.Module):
     def __init__(
         self,
@@ -375,7 +463,6 @@ class StructureModule(nn.Module):
     ]:
         N_RES = len(single_rep)
 
-        print(target_struct)
         compute_losses = target_struct is not None
 
         single_rep_initial = self.layer_norm_single1(single_rep)
@@ -386,15 +473,7 @@ class StructureModule(nn.Module):
 
         if compute_losses:
             true_frames = ProteinFrames.from_structure(target_struct)
-            _torsion_angles, _alt_torsion_angles, _ = target_struct.get_torsion_angles()
-            true_angles = torch.stack(
-                [torch.sin(_torsion_angles), torch.cos(_torsion_angles)],
-                dim=2,
-            )
-            true_alt_angles = torch.stack(
-                [torch.sin(_alt_torsion_angles), torch.cos(_alt_torsion_angles)],
-                dim=2,
-            )
+            true_angles, true_alt_angles, _ = target_struct.get_torsion_angles()
             L_aux = 0
 
         for l in range(self.n_layers):
@@ -415,9 +494,10 @@ class StructureModule(nn.Module):
             if compute_losses:
                 ca_coords = frames.ts
                 true_ca_coords = true_frames.ts
+                ca_mask = torch.ones((N_RES,))
 
                 L_aux_l = frame_aligned_point_error(
-                    frames, ca_coords, true_frames, true_ca_coords
+                    frames, ca_coords, true_frames, true_ca_coords, ca_mask
                 ) + torsion_angle_loss(pred_angles, true_angles, true_alt_angles)
                 L_aux = L_aux + L_aux_l
 
@@ -425,7 +505,7 @@ class StructureModule(nn.Module):
             if l < self.n_layers - 1 and self.training:
                 frames.Rs = frames.Rs.detach()
 
-        frames_per_group, pred_struct = compute_all_atom_coords(
+        frames_per_rigid_group, pred_struct = compute_all_atom_coords(
             frames, pred_angles, res_index
         )
         if not compute_losses:
@@ -434,10 +514,22 @@ class StructureModule(nn.Module):
 
         L_aux = L_aux / self.n_layers
 
-        # TODO: compute all-atom FAPE loss
-        L_fape = 0
+        rn_true_struct = rename_symmetric_ground_truth_atoms(
+            pred_struct, target_struct, res_index
+        )
+        rn_true_frames = ProteinFrames.from_structure(rn_true_struct)
+        rn_true_angles, *_ = target_struct.get_torsion_angles()
+        rn_true_frames_per_rigid_group, _ = compute_all_atom_coords(
+            rn_true_frames, rn_true_angles, res_index
+        )
+        L_fape = frame_aligned_point_error_all_atom(
+            frames_per_rigid_group,
+            pred_struct,
+            rn_true_frames_per_rigid_group,
+            rn_true_struct,
+        )
 
-        true_lddt = compute_per_residue_lddt_ca(pred_struct, target_struct)
+        true_lddt = compute_per_residue_lddt_ca(pred_struct, rn_true_struct)
         plddt, L_conf = self.plddt_head(single_rep, true_lddt)
 
         return pred_struct, plddt, L_fape, L_conf, L_aux

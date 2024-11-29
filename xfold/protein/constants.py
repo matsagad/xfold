@@ -117,6 +117,12 @@ AA_180_DEG_SYMMETRIC_CHI_ANGLES = {
     "PHE": [2],
     "TYR": [2],
 }
+AA_AMBIG_ATOMS_RENAMING_SWAPS = {
+    "ASP": {"OD1": "OD2", "OD2": "OD1"},
+    "GLU": {"OE1": "OE2", "OE2": "OE1"},
+    "PHE": {"CD1": "CD2", "CD2": "CD1", "CE1": "CE2", "CE2": "CE1"},
+    "TYR": {"CD1": "CD2", "CD2": "CD1", "CE1": "CE2", "CE2": "CE1"},
+}
 ## Taken from alphafold/common/residue_constants.py
 ## Legend: [atom, rigid group no, relative position]
 ##  where the rigid groups are:
@@ -335,6 +341,11 @@ AA_RIGID_GROUP_ATOM14_POS = {
     ],
 }
 # fmt: on
+AA_ATOM_TYPE_TO_RIGID_GROUP = {
+    atom_type: rigid_group_no
+    for atom_infos in AA_RIGID_GROUP_ATOM14_POS.values()
+    for atom_type, rigid_group_no, _ in atom_infos
+}
 BB_ATOM_TYPES = ["N", "CA", "C"]
 AA_TORSION_NAMES = ["omega", "phi", "psi", "chi1", "chi2", "chi3", "chi4"]
 
@@ -345,6 +356,9 @@ AA_ATOM14_MASK = torch.zeros((_N_AA, _MAX_N_ATOM_PER_AA))
 AA_LIT_ATOM14_POS = torch.zeros((_N_AA, _MAX_N_ATOM_PER_AA, 3))
 AA_LIT_ATOM14_POS_4x1 = torch.zeros((_N_AA, _MAX_N_ATOM_PER_AA, 4))
 AA_LIT_RIGID_TO_RIGID = torch.zeros((_N_AA, _N_RIGID_GROUPS, 4, 4))
+
+AA_AMBIG_ATOMS_MASK = torch.zeros((_N_AA, _MAX_N_ATOM_PER_AA))
+AA_AMBIG_ATOMS_PERMUTE = torch.arange(_MAX_N_ATOM_PER_AA).tile(_N_AA, 1)
 
 
 def rigid_4x4_from_axes(
@@ -362,10 +376,10 @@ def rigid_4x4_from_axes(
 
 
 def fill_rigid_group_constants() -> None:
-    for aa3, atom_info in AA_RIGID_GROUP_ATOM14_POS.items():
+    for aa3, atom_infos in AA_RIGID_GROUP_ATOM14_POS.items():
         res_index = AA3_INDICES[aa3]
 
-        for atom_type, rigid_group_no, rel_pos in atom_info:
+        for atom_type, rigid_group_no, rel_pos in atom_infos:
             atom_index = HEAVY_ATOMS_BY_AA[aa3].index(atom_type)
 
             AA_ATOM14_TO_RIGID_GROUP[res_index, atom_index] = rigid_group_no
@@ -378,10 +392,10 @@ def fill_rigid_group_constants() -> None:
     # pre-omega to bb
     AA_LIT_RIGID_TO_RIGID[:, 1] = torch.eye(4)
 
-    for aa3, atom_info in AA_RIGID_GROUP_ATOM14_POS.items():
+    for aa3, atom_infos in AA_RIGID_GROUP_ATOM14_POS.items():
         res_index = AA3_INDICES[aa3]
         atom_pos = {
-            atom_type: torch.tensor(rel_pos) for atom_type, _, rel_pos in atom_info
+            atom_type: torch.tensor(rel_pos) for atom_type, _, rel_pos in atom_infos
         }
         chi_angle_atoms = CHI_ANGLE_ATOMS_BY_AA[aa3]
 
@@ -414,8 +428,19 @@ def fill_rigid_group_constants() -> None:
                 t=atom_pos[axis_end_atom],
             )
 
+def fill_ambig_constants() -> None:
+    for aa3, swaps in AA_AMBIG_ATOMS_RENAMING_SWAPS.items():
+        res_index = AA3_INDICES[aa3]
+        heavy_atoms = HEAVY_ATOMS_BY_AA[aa3]
+        for atom1, atom2 in swaps.items():
+            AA_AMBIG_ATOMS_MASK[res_index, heavy_atoms.index(atom1)] = 1
+            AA_AMBIG_ATOMS_PERMUTE[res_index, heavy_atoms.index(atom1)] = (
+                heavy_atoms.index(atom2)
+            )
+
 
 fill_rigid_group_constants()
+fill_ambig_constants()
 
 
 # MSA Constants
