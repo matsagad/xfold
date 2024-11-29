@@ -43,7 +43,7 @@ class OneHotNearestBin(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         n_bins = self.bins.shape[0]
         p = torch.zeros((x.numel(), n_bins), device=x.device)
-        p[torch.argmin(torch.abs(x.view(-1, 1) - self.bins.unsqueeze(0)))] = 1
+        p[torch.argmin(torch.abs(x.view(-1, 1) - self.bins.unsqueeze(0)), dim=0)] = 1
         return p.view(*x.shape, n_bins)
 
 

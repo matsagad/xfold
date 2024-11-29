@@ -268,8 +268,8 @@ def compute_all_atom_coords(
     atom14_coords = torch.zeros((N_RES, N_ATOM14_TYPES, 3))
     atom14_mask = AA_ATOM14_MASK[res_index] == 1
     for i, res in enumerate(res_index):
-        has_atom = atom14_mask[res]
-        T_per_atom = T_all[AA_ATOM14_TO_RIGID_GROUP[res, has_atom], res]
+        has_atom = atom14_mask[i]
+        T_per_atom = T_all[AA_ATOM14_TO_RIGID_GROUP[res, has_atom], i]
         atom_pos = AA_LIT_ATOM14_POS_4x1[res, has_atom]
         atom14_coords[i, has_atom] = torch.einsum("ijk,ik->ij", T_per_atom, atom_pos)[
             :, :-1
