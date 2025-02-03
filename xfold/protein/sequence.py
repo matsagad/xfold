@@ -1,35 +1,36 @@
 import torch
 import torch.nn.functional as F
 from typing import List
-from xfold.protein.constants import AminoAcidVocab, MSAVocab, MSA_GAP_SYMBOL
+from xfold.protein.constants import AminoAcidVocab, MSAVocab, MSA_GAP_SYMBOL, Vocab
 
 
 class Sequence:
-    def __init__(self, seq: str) -> None:
-        self._validate_sequence(seq)
+    def __init__(self, seq: str, vocab: Vocab = AminoAcidVocab) -> None:
+        self.vocab = vocab
+        self._validate_sequence(seq, vocab)
         self.seq_str = seq.upper()
-        self.seq_index = Sequence.residue_index(self.seq_str)
-        self.seq_one_hot = Sequence.one_hot_encode(self.seq_str)
+        self.seq_index = Sequence.residue_index(self.seq_str, vocab)
+        self.seq_one_hot = Sequence.one_hot_encode(self.seq_str, vocab)
 
-    def residue_index(seq: str) -> torch.Tensor:
-        return torch.tensor(AminoAcidVocab.index_sequence(seq)).long()
+    def residue_index(seq: str, vocab: Vocab = AminoAcidVocab) -> torch.Tensor:
+        return torch.tensor(vocab.index_sequence(seq)).long()
 
-    def one_hot_encode(seq: str) -> torch.Tensor:
+    def one_hot_encode(seq: str, vocab: Vocab = AminoAcidVocab) -> torch.Tensor:
         return F.one_hot(
-            torch.tensor(AminoAcidVocab.index_sequence(seq)), AminoAcidVocab.vocab_size
+            torch.tensor(vocab.index_sequence(seq)), vocab.vocab_size
         ).float()
 
     def length(self) -> int:
-        return len(self.seq_str)
+        return len(self.seq_index)
 
     def __str__(self) -> str:
         return f'Sequence("{self.seq_str}")'
 
-    def _validate_sequence(self, seq: str) -> None:
+    def _validate_sequence(self, seq: str, vocab: Vocab = AminoAcidVocab) -> None:
         for char in seq:
             if not char.isalpha():
                 raise Exception(f"'{char}' is not an alpha character.")
-            if not AminoAcidVocab.is_amino_acid(char.upper()):
+            if not vocab.is_valid(char.upper()):
                 raise Exception(f"'{char}' is not a valid amino acid code.")
 
 

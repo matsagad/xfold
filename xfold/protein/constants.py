@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 import torch
 from typing import Iterable, List
 
@@ -34,7 +35,29 @@ AA3_ALPHABET = [AA_CODE_EXPAND[aa] for aa in AA_ALPHABET]
 AA3_INDICES = {aa3: i for i, aa3 in enumerate(AA3_ALPHABET)}
 
 
-class AminoAcidVocab:
+class Vocab(ABC):
+    @property
+    @abstractmethod
+    def vocab_size(self) -> int:
+        raise NotADirectoryError()
+
+    @staticmethod
+    @abstractmethod
+    def get_index(aa: str) -> int:
+        raise NotImplementedError()
+
+    @staticmethod
+    @abstractmethod
+    def is_valid(aa: str) -> bool:
+        raise NotImplementedError()
+
+    @staticmethod
+    @abstractmethod
+    def index_sequence(seq: Iterable[str]) -> List[str]:
+        raise NotImplementedError()
+
+
+class AminoAcidVocab(Vocab):
     vocab = AA_ALPHABET
     vocab_size = len(AA_ALPHABET)
 
@@ -47,10 +70,10 @@ class AminoAcidVocab:
     def contract_three_letter_code(aa3: str) -> str:
         return AA_CODE_CONTRACT.get(aa3, "X")
 
-    def is_amino_acid(aa: str) -> bool:
+    def is_valid(aa: str) -> bool:
         return aa in AA_CODE_EXPAND
 
-    def index_sequence(seq: Iterable[str]) -> List[str]:
+    def index_sequence(seq: str) -> List[int]:
         return [AminoAcidVocab.get_index(aa) for aa in seq]
 
     def sequence_from_indices(indices: Iterable[int]) -> str:
@@ -427,6 +450,7 @@ def fill_rigid_group_constants() -> None:
                 e2=torch.tensor([-1, 0, 0]),
                 t=atom_pos[axis_end_atom],
             )
+
 
 def fill_ambig_constants() -> None:
     for aa3, swaps in AA_AMBIG_ATOMS_RENAMING_SWAPS.items():
