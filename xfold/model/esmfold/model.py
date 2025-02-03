@@ -2,23 +2,27 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Any, Dict, Tuple
+from xfold.configs.esmfold import ESMFoldConfig
+from xfold.model import register_folding_model
 from xfold.model.base import BaseFoldingModel
 from xfold.model.esmfold.constants import ESMVocab, START_TOKEN, END_TOKEN, PAD_TOKEN
 from xfold.model.esmfold.lm import ESM1, ESM2
 from xfold.protein.sequence import Sequence
 from xfold.protein.structure import ProteinStructure
 
+
+@register_folding_model("esmfold", ESMFoldConfig)
 class ESMFold(nn.Module, BaseFoldingModel):
     def __init__(
         self,
-        seq_len: int,
-        single_dim: int,
-        pair_dim: int,
-        embed_dim: int,
-        lm_attn_head_dim: int,
-        n_lm_attn_heads: int,
-        n_lm_encoder_blocks: int,
-        use_attn_map: bool,
+        seq_len: int = 1024,
+        single_dim: int = 1024,
+        pair_dim: int = 128,
+        embed_dim: int = 2560,
+        lm_attn_head_dim: int = 64,
+        n_lm_attn_heads: int = 40,
+        n_lm_encoder_blocks: int = 36,
+        use_attn_map: bool = False,
     ) -> None:
         super().__init__()
         self.seq_len = seq_len
