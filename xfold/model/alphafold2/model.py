@@ -10,13 +10,14 @@ from xfold.model.alphafold2.embedders import (
     ExtraMSAEmbedder,
 )
 from xfold.model.alphafold2.evoformer import EvoformerStack
+from xfold.model.base import BaseFoldingModel
 from xfold.model.common.structure import StructureModule
 from xfold.protein.sequence import MSA, Sequence
 from xfold.protein.structure import ProteinStructure, TemplateProtein
 
 
 @register_folding_model("alphafold2", AlphaFold2Config)
-class AlphaFold2(nn.Module):
+class AlphaFold2(nn.Module, BaseFoldingModel):
     def __init__(
         self,
         n_recycling_iters: int = 3,
@@ -126,7 +127,7 @@ class AlphaFold2(nn.Module):
             n_struct_module_layers,
         )
 
-    def predict(self, seq: str) -> Tuple[ProteinStructure, Dict[str, Any]]:
+    def fold(self, seq: str) -> Tuple[ProteinStructure, Dict[str, Any]]:
         seq = Sequence(seq)
 
         # Retrieve MSA from external database and pre-process/cluster
