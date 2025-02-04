@@ -55,11 +55,11 @@ class RoPE(nn.Module):
 class SelfAttention(nn.Module):
     def __init__(
         self,
-        seq_len: int,
         input_dim: int,
         head_dim: int,
         n_heads: int,
         use_rope: bool = False,
+        rope_seq_len: int = None,
     ) -> None:
         super().__init__()
         self.head_dim = head_dim
@@ -70,10 +70,18 @@ class SelfAttention(nn.Module):
         self.out_proj = nn.Linear(n_heads * head_dim, input_dim)
 
         self.use_rope = use_rope
-        self.embed_rotary = RoPE(seq_len, head_dim) if use_rope else None
+        if use_rope and rope_seq_len is None:
+            raise Exception(
+                "Max sequence length must be specified for rotary embeddings."
+            )
+        self.embed_rotary = RoPE(rope_seq_len, head_dim) if use_rope else None
 
     def forward(
-        self, x: torch.Tensor, mask: torch.Tensor, output_attn_score: bool = False
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor = None,
+        bias: torch.Tensor = None,
+        output_attn_score: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         qkv_shape = (*x.shape[:-1], self.head_dim, self.n_heads)
         qkv = self.to_qkv(x).chunk(3, dim=-1)
@@ -84,7 +92,10 @@ class SelfAttention(nn.Module):
             q, k = self.embed_rotary(q, k)
 
         attn_score = self.inv_sqrt_dim * torch.einsum("ijdh,ikdh->ijkh", q, k)
-        attn_score[mask == 0] = -1e8
+        if bias is not None:
+            attn_score = attn_score + bias
+        if mask is not None:
+            attn_score[mask == 0] = -1e8
 
         attn_logits = F.softmax(attn_score, dim=2)
         attn = torch.einsum("ijkh,ikdh->ijdh", attn_logits, v)
@@ -109,7 +120,7 @@ class Encoder(nn.Module):
         self.norm1 = nn.LayerNorm(input_dim)
         self.norm2 = nn.LayerNorm(input_dim)
         self.attn = SelfAttention(
-            seq_len, input_dim, attn_head_dim, n_attn_heads, use_rope
+            input_dim, attn_head_dim, n_attn_heads, use_rope, seq_len
         )
         self.proj1 = nn.Linear(input_dim, proj_dim)
         self.proj2 = nn.Linear(proj_dim, input_dim)
@@ -117,7 +128,7 @@ class Encoder(nn.Module):
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor, output_attn_score: bool
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        attn = self.attn(self.norm1(x), mask, output_attn_score)
+        attn = self.attn(self.norm1(x), mask, output_attn_score=output_attn_score)
         if output_attn_score:
             attn, attn_score = attn
 
@@ -160,9 +171,11 @@ class BERT(nn.Module):
         )
 
     def forward(
-        self, token_ids: torch.Tensor, output_attn_score: torch.Tensor = False
+        self,
+        token_ids: torch.Tensor,
+        mask: torch.Tensor,
+        output_attn_score: bool = False,
     ) -> Dict[str, Any]:
-        mask = (token_ids == ESMVocab.get_index(PAD_TOKEN)).long()
         hidden_states = []
         attn_maps = []
 
