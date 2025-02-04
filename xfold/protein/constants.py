@@ -68,10 +68,10 @@ class AminoAcidVocab(Vocab):
         return AA_CODE_EXPAND.get(aa, "XXX")
 
     def contract_three_letter_code(aa3: str) -> str:
-        return AA_CODE_CONTRACT.get(aa3, "X")
+        return AA_CODE_CONTRACT.get(aa3, AA_UNKNOWN)
 
     def is_valid(aa: str) -> bool:
-        return aa in AA_CODE_EXPAND
+        return aa != AA_UNKNOWN and aa in AA_CODE_EXPAND
 
     def index_sequence(seq: str) -> List[int]:
         return [AminoAcidVocab.get_index(aa) for aa in seq]
