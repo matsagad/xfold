@@ -23,6 +23,12 @@ class FoldingBlock(nn.Module):
         super().__init__()
         n_single_heads = single_dim // single_head_dim
         n_pair_heads = pair_dim // pair_head_dim
+
+        if n_single_heads == 0 or n_pair_heads == 0:
+            raise Exception(
+                f"Specified head dimension is larger than embedding dimension."
+            )
+
         self.n_single_heads = n_single_heads
 
         self.to_b = nn.Linear(pair_dim, n_single_heads)
