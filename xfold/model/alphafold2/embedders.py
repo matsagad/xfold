@@ -9,6 +9,7 @@ from xfold.model.common.misc import (
     LinearSigmoid,
     OneHotNearestBin,
     OuterProductMean,
+    RelPos,
 )
 from xfold.model.common.triangle_ops import (
     TriangleAttentionStartingNode,
@@ -23,18 +24,6 @@ from xfold.model.alphafold2.evoformer import (
 )
 from xfold.protein.sequence import AminoAcidVocab, MSA
 from xfold.protein.structure import TemplateProtein
-
-
-class RelPos(nn.Module):
-    def __init__(self, embed_dim: int, bins: torch.Tensor) -> None:
-        super().__init__()
-        self.one_hot = OneHotNearestBin(bins)
-        self.linear = nn.Linear(bins.shape[0], embed_dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        d_pos = x.unsqueeze(1) - x.unsqueeze(0)
-        p = self.linear(self.one_hot(d_pos))
-        return p
 
 
 class InputEmbedder(nn.Module):
