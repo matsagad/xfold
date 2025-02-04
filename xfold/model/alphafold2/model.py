@@ -5,12 +5,12 @@ from xfold.configs.alphafold2 import AlphaFold2Config
 from xfold.model import register_folding_model
 from xfold.model.alphafold2.embedders import (
     InputEmbedder,
-    RecyclingEmbedder,
     TemplateEmbedder,
     ExtraMSAEmbedder,
 )
 from xfold.model.alphafold2.evoformer import EvoformerStack
 from xfold.model.base import BaseFoldingModel
+from xfold.model.common.embedders import RecyclingEmbedder
 from xfold.model.common.structure import StructureModule
 from xfold.protein.sequence import MSA, Sequence
 from xfold.protein.structure import ProteinStructure, TemplateProtein
@@ -185,9 +185,13 @@ class AlphaFold2(nn.Module, BaseFoldingModel):
                     target_feat, res_index, msa_feat_cn
                 )
                 # Recycling embedder
-                target_msa_rep, pair_rep = self.recycling_embedder(
+                target_msa_update, pair_update = self.recycling_embedder(
                     prev_avg_target_msa_rep, prev_avg_pair_rep, prev_avg_struct_cb
                 )
+                msa_rep[0] = msa_rep[0] + target_msa_update
+                pair_rep = pair_rep + pair_update
+                target_msa_rep = msa_rep[0]
+
                 # Templates embedder
                 if use_templates:
                     msa_rep, pair_rep = self.template_embedder(
