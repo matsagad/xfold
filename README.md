@@ -60,10 +60,9 @@ A collection of folding models implemented from scratch.
 - [x] Auxiliary loss heads 
 
 ### ESMFold
-- [ ] Main inference loop
+- [x] Main inference loop
     - [x] ESM language model
-    - [ ] Folding trunk
-    - [ ] Structure module
+    - [x] Folding trunk
 
 ## Resources
 
