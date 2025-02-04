@@ -1,5 +1,6 @@
+import torch
 from typing import List
-from xfold.protein.constants import AA_ALPHABET, Vocab
+from xfold.protein.constants import AA_ALPHABET, AA_INDICES, AA_UNKNOWN, Vocab
 
 
 AA_UNCOMMON = "BOUZ"
@@ -72,3 +73,10 @@ class ESMVocab(Vocab):
 
     def index_sequence(seq: str) -> List[int]:
         return [ESMVocab.get_index(token) for token in ESMVocab.tokenize_sequence(seq)]
+
+
+def esm_to_alphafold_indices(res_index: torch.Tensor) -> torch.Tensor:
+    assert res_index.ndim == 1
+    return torch.tensor(
+        [AA_INDICES.get(ESM_ALPHABET[i], AA_INDICES[AA_UNKNOWN]) for i in res_index]
+    )
